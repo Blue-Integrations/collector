@@ -1,15 +1,14 @@
 # Collector
 
-Python portal plus a NetFlow probe. It watches exported flows, flags aggressive port scanners, and can SSH into a MikroTik to drop them on an address-list.
+Python portal plus a NetFlow probe. It watches exported flows, flags aggressive port scanners, and can SSH into a **MikroTik**, **Cisco IOS/XE**, or **Juniper Junos** box to drop them on an access list. Pick the flavor on the dashboard.
 
 ```
-MikroTik 192.168.88.3:22232
-        │  SSH (block / unblock)
+Exporter (MikroTik / Cisco / Juniper)
         │  NetFlow v5 / v9 / IPFIX  →  UDP :2055
         ▼
-   Collector host
+   Collector host  :8080
         │
-        └── Web portal  :8080
+        └── SSH block/unblock → chosen router
 ```
 
 Default policy is **detect only**. Auto-block stays off until you enable it in the portal or set `AUTO_BLOCK=true`. The LAN allowlist (`192.168.88.0/24` by default) is never auto-blocked. Public DNS anycast (Cloudflare `1.1.1.1`, Google `8.8.8.8`, Quad9, OpenDNS) is always ignored, as are DNS/DoT **reply** legs (`src_port` 53/853) so NetFlow's reverse flows are not scored as scans.
@@ -22,7 +21,7 @@ python3 -m venv .venv
 source .venv/bin/activate
 pip install -e .
 cp .env.example .env
-# edit .env — portal password, MikroTik user/password or key
+# edit .env — portal password, then SSH for the router you will block on
 python -m collector
 ```
 
@@ -53,7 +52,7 @@ UDP 2055 must be reachable from the router to the collector. If the collector is
 
 The probe accepts **v5, v9, and IPFIX**. Prefer **v9** (or IPFIX on IOS-XE). Send UDP **2055** to `<COLLECTOR_IP>`. Sampling is optional; unsampled is better for scanner detection.
 
-Cisco export is ingest-only. Auto-block still SSHs the MikroTik unless you add a separate IOS ACL workflow.
+Cisco export is ingest-only until you set `CISCO_*` in `.env` and select **Cisco** on the dashboard. Then auto-block SSHs that box and maintains an object-group + ACL.
 
 ### IOS / IOS-XE — Flexible NetFlow (v9)
 
@@ -189,9 +188,59 @@ MIKROTIK_USER=collector
 MIKROTIK_PASSWORD=...
 ```
 
-Or use a key with `MIKROTIK_KEY_PATH=/path/to/id_ed25519`. Then use **Test SSH** on the portal.
+Or use a key with `MIKROTIK_KEY_PATH=/path/to/id_ed25519`. Leave `BLOCKER_VENDOR=mikrotik` (or pick **MikroTik** on the portal) and use **Test SSH**.
 
-Manual block/unblock from the UI talks to the same address-list. Enabling **Auto-block on MikroTik** pushes detections as they fire.
+Manual block/unblock from the UI talks to the same address-list. Enabling **Auto-block on router** pushes detections as they fire.
+
+## Cisco: SSH blocking (IOS / IOS-XE)
+
+Fill `.env`, pick **Cisco** on the dashboard, then **Test SSH**.
+
+```
+CISCO_HOST=192.0.2.1
+CISCO_PORT=22
+CISCO_USER=collector
+CISCO_PASSWORD=...
+CISCO_ENABLE_PASSWORD=...
+CISCO_ACL=NETFLOW-COLLECTOR
+CISCO_OBJECT_GROUP=blocked-scanners
+```
+
+The collector creates `object-group network blocked-scanners` and extended ACL `NETFLOW-COLLECTOR`:
+
+```
+deny ip object-group blocked-scanners any
+permit ip any any
+```
+
+It does **not** apply the ACL to an interface. Do that once on the WAN yourself:
+
+```
+interface GigabitEthernet0/0
+ ip access-group NETFLOW-COLLECTOR in
+```
+
+NX-OS object-groups use different syntax and are not driven by this client.
+
+## Juniper: SSH blocking (Junos)
+
+Fill `.env`, pick **Juniper**, then **Test SSH**.
+
+```
+JUNIPER_HOST=192.0.2.2
+JUNIPER_PORT=22
+JUNIPER_USER=collector
+JUNIPER_PASSWORD=...
+JUNIPER_PREFIX_LIST=blocked-scanners
+JUNIPER_FILTER=NETFLOW-COLLECTOR
+```
+
+The collector `commit`s a prefix-list plus filter `NETFLOW-COLLECTOR` (`source-prefix-list` → `discard`, then `accept`). It does **not** attach the filter to an interface. Apply it on the ingress family:
+
+```
+set interfaces ge-0/0/0 unit 0 family inet filter input NETFLOW-COLLECTOR
+commit
+```
 
 ## Detector
 
@@ -223,7 +272,7 @@ Health check: `GET /api/health` (no auth). The dashboard APIs require a session.
 
 ## JSON dumps (API key)
 
-`SECRET_KEY` in `.env` is the API access key. Talker counters reset when the process restarts; blocked IPs come from the local DB plus the MikroTik address-list.
+`SECRET_KEY` in `.env` is the API access key. Talker counters reset when the process restarts; blocked IPs come from the local DB plus the active router access list.
 
 ```bash
 # combined blocked IPs + top talkers
@@ -255,5 +304,7 @@ app.include_router(router)
 | `collector/netflow.py` | v5 / v9 / IPFIX parser |
 | `collector/detection.py` | scan detector |
 | `collector/mikrotik.py` | RouterOS SSH |
+| `collector/cisco.py` | IOS/XE object-group + ACL |
+| `collector/juniper.py` | Junos prefix-list + filter |
 | `collector/app.py` | FastAPI portal |
 | `collector/templates/` | login + dashboard |

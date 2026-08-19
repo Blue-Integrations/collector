@@ -18,10 +18,10 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
 
+from collector.blocker import VENDORS, VENDOR_LABELS, RouterError, make_blocker, normalize_vendor
 from collector.config import Settings, get_settings
 from collector.db import Database
 from collector.detection import ScanDetector
-from collector.mikrotik import MikroTikClient, MikroTikError
 from collector.netflow import Flow, NetflowParser, proto_name
 from collector.probe import ProbeStats, start_probe
 from collector.schemas import BlockedDump, FullDump, Health, TalkersDump
@@ -38,7 +38,8 @@ class Runtime:
         self.parser = NetflowParser()
         self.stats = ProbeStats()
         self.queue: asyncio.Queue[Flow] = asyncio.Queue(maxsize=20000)
-        self.mikrotik = MikroTikClient(settings)
+        vendor = normalize_vendor(self.db.get_kv("blocker_vendor", settings.blocker_vendor))
+        self.blocker = make_blocker(settings, vendor)
         self.detector = ScanDetector(
             window_sec=settings.scan_window_sec,
             vertical_ports=settings.vertical_port_threshold,
@@ -47,23 +48,27 @@ class Runtime:
             allowlist=settings.allowlist_cidrs(),
             protected=settings.protected_cidr_list(),
         )
-        self.mikrotik_status: dict[str, Any] = {
-            "connected": False,
-            "host": settings.mikrotik_host,
-            "port": settings.mikrotik_port,
-            "identity": "",
-            "version": "",
-            "address_list": settings.mikrotik_address_list,
-            "list_count": 0,
-            "filter_ready": False,
-            "last_error": "",
-            "last_ok": None,
-        }
+        self.mikrotik_status: dict[str, Any] = _status_dict(settings, vendor)
         self.sample_counter = 0
         self.talkers = TalkerTracker()
         self.auto_block = _as_bool(self.db.get_kv("auto_block"), settings.auto_block)
         self._transport = None
         self._tasks: list[asyncio.Task] = []
+
+    @property
+    def vendor(self) -> str:
+        return getattr(self.blocker, "vendor", "mikrotik")
+
+    def set_vendor(self, vendor: str) -> str:
+        chosen = normalize_vendor(vendor)
+        if chosen not in VENDORS:
+            raise HTTPException(status_code=400, detail="vendor must be mikrotik, cisco, or juniper")
+        self.db.set_kv("blocker_vendor", chosen)
+        if self.vendor != chosen:
+            self.blocker.close()
+            self.blocker = make_blocker(self.settings, chosen)
+            self.mikrotik_status = _status_dict(self.settings, chosen)
+        return chosen
 
     def apply_thresholds(self) -> None:
         s = self.settings
@@ -125,7 +130,7 @@ async def lifespan(app: FastAPI):
     runtime._tasks = [
         asyncio.create_task(_flow_worker(runtime), name="flow-worker"),
         asyncio.create_task(_housekeeping(runtime), name="housekeeping"),
-        asyncio.create_task(_mikrotik_watch(runtime), name="mikrotik-watch"),
+        asyncio.create_task(_router_watch(runtime), name="router-watch"),
         asyncio.create_task(_unblock_allowlisted(runtime), name="unblock-dns"),
     ]
     if settings.demo:
@@ -139,7 +144,7 @@ async def lifespan(app: FastAPI):
     await asyncio.gather(*runtime._tasks, return_exceptions=True)
     if runtime._transport is not None:
         runtime._transport.close()
-    runtime.mikrotik.close()
+    runtime.blocker.close()
     runtime.db.close()
     runtime = None
 
@@ -147,7 +152,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Collector",
     description=(
-        "NetFlow probe and MikroTik scanner blocker. "
+        "NetFlow probe and scanner blocker (MikroTik, Cisco, or Juniper). "
         "Machine JSON dumps live under `/api/dump`. "
         "Send header `X-API-Key` with the same value as `SECRET_KEY`."
     ),
@@ -266,14 +271,18 @@ async def dashboard(request: Request):
         return RedirectResponse("/login", status_code=302)
     rt = get_runtime()
     s = rt.settings
+    host, port, _acl = s.blocker_endpoint(rt.vendor)
     return templates.TemplateResponse(
         request,
         "dashboard.html",
         {
             "user": request.session.get("user"),
             "netflow_port": s.netflow_port,
-            "mikrotik_host": s.mikrotik_host,
-            "mikrotik_port": s.mikrotik_port,
+            "router_host": host,
+            "router_port": port,
+            "vendor": rt.vendor,
+            "vendors": VENDORS,
+            "vendor_labels": VENDOR_LABELS,
             "weak_password": s.portal_password in {"changeme", "admin", "password"},
         },
     )
@@ -290,6 +299,9 @@ async def api_overview(request: Request, _: None = Depends(require_login)):
     return {
         "stats": rt.stats.as_dict(),
         "mikrotik": rt.mikrotik_status,
+        "router": rt.mikrotik_status,
+        "vendor": rt.vendor,
+        "vendors": [{"id": key, "label": VENDOR_LABELS[key]} for key in VENDORS],
         "auto_block": rt.auto_block,
         "thresholds": {
             "scan_window_sec": rt.detector.window_sec,
@@ -328,8 +340,8 @@ async def api_unblock(request: Request, _: None = Depends(require_login)):
     _validate_ip(ip)
     rt = get_runtime()
     try:
-        await asyncio.to_thread(rt.mikrotik.unblock, ip)
-    except MikroTikError as exc:
+        await asyncio.to_thread(rt.blocker.unblock, ip)
+    except RouterError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     rt.db.deactivate_block(ip)
     rt.db.log(f"unblocked {ip}")
@@ -342,6 +354,7 @@ async def api_settings(request: Request, _: None = Depends(require_login)):
     rt = get_runtime()
     mapping = {
         "auto_block": body.get("auto_block"),
+        "blocker_vendor": body.get("blocker_vendor") or body.get("vendor"),
         "scan_window_sec": body.get("scan_window_sec"),
         "vertical_port_threshold": body.get("vertical_port_threshold"),
         "horizontal_host_threshold": body.get("horizontal_host_threshold"),
@@ -350,6 +363,8 @@ async def api_settings(request: Request, _: None = Depends(require_login)):
     }
     if mapping["auto_block"] is not None:
         rt.db.set_kv("auto_block", "true" if mapping["auto_block"] else "false")
+    if mapping.get("blocker_vendor"):
+        rt.set_vendor(str(mapping["blocker_vendor"]))
     for key in (
         "scan_window_sec",
         "vertical_port_threshold",
@@ -361,18 +376,20 @@ async def api_settings(request: Request, _: None = Depends(require_login)):
             rt.db.set_kv(key, str(mapping[key]).strip())
     rt.apply_thresholds()
     rt.db.log("settings updated")
-    return {"ok": True, "auto_block": rt.auto_block}
+    return {"ok": True, "auto_block": rt.auto_block, "vendor": rt.vendor}
 
 
+@app.post("/api/router/test")
 @app.post("/api/mikrotik/test")
-async def api_mikrotik_test(request: Request, _: None = Depends(require_login)):
+async def api_router_test(request: Request, _: None = Depends(require_login)):
     rt = get_runtime()
-    status = await asyncio.to_thread(rt.mikrotik.probe)
+    label = VENDOR_LABELS.get(rt.vendor, rt.vendor)
+    status = await asyncio.to_thread(rt.blocker.probe)
     rt.mikrotik_status = status.__dict__
     if status.connected:
-        rt.db.log(f"MikroTik reachable ({status.identity} {status.version})")
+        rt.db.log(f"{label} reachable ({status.identity} {status.version})")
     else:
-        rt.db.log(f"MikroTik check failed: {status.last_error}", "error")
+        rt.db.log(f"{label} check failed: {status.last_error}", "error")
     return rt.mikrotik_status
 
 
@@ -384,6 +401,8 @@ async def api_health():
         "netflow_port": rt.settings.netflow_port,
         "flows": rt.stats.flows,
         "mikrotik": rt.mikrotik_status.get("connected"),
+        "router": rt.mikrotik_status.get("connected"),
+        "vendor": rt.vendor,
     }
 
 
@@ -405,9 +424,11 @@ def _blocked_dump(rt: Runtime, router_ips: list[str] | None) -> dict[str, Any]:
                 "on_router": ip in router_set if router_ips is not None else None,
             }
         )
+    host, _port, acl = rt.settings.blocker_endpoint(rt.vendor)
     return {
         "generated_at": time.time(),
-        "address_list": rt.settings.mikrotik_address_list,
+        "address_list": rt.mikrotik_status.get("address_list") or acl,
+        "vendor": rt.vendor,
         "count": len(blocked),
         "blocked": blocked,
     }
@@ -422,8 +443,8 @@ async def api_dump(
     rt = get_runtime()
     router_ips: list[str] | None = None
     try:
-        router_ips = await asyncio.to_thread(rt.mikrotik.list_blocked)
-    except MikroTikError:
+        router_ips = await asyncio.to_thread(rt.blocker.list_blocked)
+    except RouterError:
         router_ips = None
     payload = _blocked_dump(rt, router_ips)
     payload["talkers"] = rt.talkers.dump(limit=limit)
@@ -436,8 +457,8 @@ async def api_dump_blocked(request: Request, _: None = Depends(require_api_key))
     rt = get_runtime()
     router_ips: list[str] | None = None
     try:
-        router_ips = await asyncio.to_thread(rt.mikrotik.list_blocked)
-    except MikroTikError:
+        router_ips = await asyncio.to_thread(rt.blocker.list_blocked)
+    except RouterError:
         router_ips = None
     return _blocked_dump(rt, router_ips)
 
@@ -462,8 +483,8 @@ async def _block_ip(rt: Runtime, ip: str, reason: str, source: str) -> None:
     if rt.detector.is_allowed(ip):
         raise HTTPException(status_code=400, detail=f"{ip} is on the allowlist")
     try:
-        await asyncio.to_thread(rt.mikrotik.block, ip, f"collector:{reason}")
-    except MikroTikError as exc:
+        await asyncio.to_thread(rt.blocker.block, ip, f"collector:{reason}")
+    except RouterError as exc:
         rt.db.log(f"block failed for {ip}: {exc}", "error")
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     rt.db.add_block(ip, reason, source, rt.settings.mikrotik_block_timeout)
@@ -509,11 +530,11 @@ async def _housekeeping(rt: Runtime) -> None:
             rt.db.log(f"housekeeping error: {exc}", "error")
 
 
-async def _mikrotik_watch(rt: Runtime) -> None:
+async def _router_watch(rt: Runtime) -> None:
     await asyncio.sleep(1)
     while True:
         try:
-            status = await asyncio.to_thread(rt.mikrotik.probe)
+            status = await asyncio.to_thread(rt.blocker.probe)
             rt.mikrotik_status = status.__dict__
         except asyncio.CancelledError:
             raise
@@ -531,8 +552,8 @@ async def _unblock_allowlisted(rt: Runtime) -> None:
         if not rt.detector.is_allowed(ip):
             continue
         try:
-            await asyncio.to_thread(rt.mikrotik.unblock, ip)
-        except MikroTikError as exc:
+            await asyncio.to_thread(rt.blocker.unblock, ip)
+        except RouterError as exc:
             rt.db.log(f"could not unblock allowlisted {ip}: {exc}", "error")
             continue
         rt.db.deactivate_block(ip)
@@ -582,6 +603,23 @@ def _as_bool(value: str | None, default: bool) -> bool:
     if value is None:
         return default
     return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _status_dict(settings: Settings, vendor: str) -> dict[str, Any]:
+    host, port, acl = settings.blocker_endpoint(vendor)
+    return {
+        "connected": False,
+        "host": host,
+        "port": port,
+        "vendor": vendor,
+        "identity": "",
+        "version": "",
+        "address_list": acl,
+        "list_count": 0,
+        "filter_ready": False,
+        "last_error": "",
+        "last_ok": None,
+    }
 
 
 @app.exception_handler(HTTPException)

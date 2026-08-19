@@ -15,7 +15,7 @@
     <div class="top-meta">
       <div class="status-stack">
         <span class="pill" id="probe-pill">probe :{{ netflow_port }}</span>
-        <span class="pill" id="mt-pill">mikrotik {{ mikrotik_host }}:{{ mikrotik_port }}</span>
+        <span class="pill" id="mt-pill">{{ vendor }} {{ router_host }}:{{ router_port }}</span>
       </div>
       <form method="post" action="/logout">
         <button class="ghost" type="submit">Sign out</button>
@@ -47,9 +47,19 @@
   </section>
 
   <section class="toolbar">
+    <label class="flavors">
+      <span class="flavors-label">Router</span>
+      <span class="select-wrap">
+        <select id="vendor-pick">
+          {% for id, label in vendor_labels.items() %}
+          <option value="{{ id }}" {% if vendor == id %}selected{% endif %}>{{ label }}</option>
+          {% endfor %}
+        </select>
+      </span>
+    </label>
     <label class="toggle">
       <input type="checkbox" id="auto-block">
-      <span>Auto-block on MikroTik</span>
+      <span id="auto-block-label">Auto-block on router</span>
     </label>
     <button type="button" id="btn-test" class="ghost">Test SSH</button>
     <button type="button" id="btn-settings" class="ghost">Thresholds</button>
@@ -98,7 +108,7 @@
     </section>
     <section class="panel">
       <header>
-        <h2>MikroTik address-list</h2>
+        <h2 id="list-heading">Router access list</h2>
         <p class="muted" id="list-name">blocked-scanners</p>
       </header>
       <form id="manual-block" class="inline">

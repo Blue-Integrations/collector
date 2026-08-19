@@ -9,6 +9,8 @@ class Health(BaseModel):
     ok: bool
     netflow_port: int
     flows: int
+    vendor: str = "mikrotik"
+    router: bool | None = None
     mikrotik: bool | None = None
 
 
@@ -26,6 +28,7 @@ class BlockedDump(BaseModel):
     address_list: str
     count: int
     blocked: list[BlockedIP]
+    vendor: str = "mikrotik"
 
 
 class Talker(BaseModel):

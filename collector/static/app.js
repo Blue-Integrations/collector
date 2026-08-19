@@ -45,7 +45,14 @@ async function api(path, options) {
 
 function renderOverview(data) {
   const s = data.stats;
-  const mt = data.mikrotik;
+  const mt = data.router || data.mikrotik;
+  const vendor = data.vendor || mt.vendor || "mikrotik";
+  const labels = {
+    mikrotik: "MikroTik",
+    cisco: "Cisco",
+    juniper: "Juniper",
+  };
+  const vendorLabel = labels[vendor] || vendor;
   $("m-rate").textContent = fmt(s.flows_per_sec);
   $("m-flows").textContent = fmt(s.flows);
   $("m-scans").textContent = fmt(data.detections.length);
@@ -59,11 +66,14 @@ function renderOverview(data) {
 
   const mtPill = $("mt-pill");
   mtPill.textContent = mt.connected
-    ? `mikrotik ${mt.identity || mt.host} · ${mt.list_count} listed`
-    : `mikrotik down · ${mt.host}:${mt.port}`;
+    ? `${vendorLabel} ${mt.identity || mt.host} · ${mt.list_count} listed`
+    : `${vendorLabel} down · ${mt.host}:${mt.port}`;
   mtPill.className = "pill" + (mt.connected ? " ok" : " bad");
   $("mt-hint").textContent = mt.last_error || (mt.filter_ready ? "drop rules present" : "");
   $("list-name").textContent = mt.address_list || "blocked-scanners";
+  $("list-heading").textContent = `${vendorLabel} access list`;
+  $("auto-block-label").textContent = `Auto-block on ${vendorLabel}`;
+  $("vendor-pick").value = vendor;
 
   $("auto-block").checked = !!data.auto_block;
   $("s-window").value = data.thresholds.scan_window_sec;
@@ -92,7 +102,7 @@ function renderOverview(data) {
   const blockBody = $("blocks");
   blockBody.innerHTML = "";
   if (!data.blocks.length) {
-    blockBody.innerHTML = `<tr><td colspan="5" class="empty">Nothing on the address-list yet.</td></tr>`;
+    blockBody.innerHTML = `<tr><td colspan="5" class="empty">Nothing on the access list yet.</td></tr>`;
   } else {
     for (const row of data.blocks) {
       const tr = document.createElement("tr");
@@ -214,7 +224,7 @@ $("settings-panel").addEventListener("submit", async (ev) => {
 $("btn-test").addEventListener("click", async () => {
   $("btn-test").disabled = true;
   try {
-    const status = await api("/api/mikrotik/test", { method: "POST", body: "{}" });
+    const status = await api("/api/router/test", { method: "POST", body: "{}" });
     $("mt-hint").textContent = status.connected
       ? `SSH ok · ${status.identity} ${status.version}`
       : status.last_error;
@@ -223,6 +233,21 @@ $("btn-test").addEventListener("click", async () => {
     $("mt-hint").textContent = err.message;
   } finally {
     $("btn-test").disabled = false;
+  }
+});
+
+$("vendor-pick").addEventListener("change", async (ev) => {
+  const vendor = ev.target.value;
+  if (!vendor) return;
+  try {
+    await api("/api/settings", {
+      method: "POST",
+      body: JSON.stringify({ blocker_vendor: vendor }),
+    });
+    await refresh();
+  } catch (err) {
+    alert(err.message);
+    await refresh();
   }
 });
 

@@ -2,29 +2,15 @@ from __future__ import annotations
 
 import re
 import time
-from dataclasses import dataclass
 
 import paramiko
 
+from collector.blocker import RouterError, RouterStatus, empty_status
 from collector.config import Settings
+from collector.ssh import connect, exec_command
 
-
-class MikroTikError(Exception):
-    pass
-
-
-@dataclass
-class MikroTikStatus:
-    connected: bool
-    host: str
-    port: int
-    identity: str = ""
-    version: str = ""
-    address_list: str = ""
-    list_count: int = 0
-    filter_ready: bool = False
-    last_error: str = ""
-    last_ok: float | None = None
+MikroTikError = RouterError
+MikroTikStatus = RouterStatus
 
 
 _ROS_FAIL = (
@@ -39,6 +25,8 @@ _ROS_FAIL = (
 
 class MikroTikClient:
     """SSH control plane for RouterOS address-list blocking."""
+
+    vendor = "mikrotik"
 
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
@@ -61,26 +49,14 @@ class MikroTikClient:
                 pass
             self._client = None
 
-    def _connect(self) -> paramiko.SSHClient:
-        client = paramiko.SSHClient()
-        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-        kwargs: dict = {
-            "hostname": self.settings.mikrotik_host,
-            "port": self.settings.mikrotik_port,
-            "username": self.settings.mikrotik_user,
-            "timeout": 8,
-            "auth_timeout": 8,
-            "banner_timeout": 8,
-            "allow_agent": False,
-            "look_for_keys": False,
-        }
-        if self.settings.mikrotik_key_path:
-            kwargs["key_filename"] = self.settings.mikrotik_key_path
-            kwargs["look_for_keys"] = True
-        if self.settings.mikrotik_password:
-            kwargs["password"] = self.settings.mikrotik_password
-        client.connect(**kwargs)
-        return client
+    def _connect(self):
+        return connect(
+            self.settings.mikrotik_host,
+            self.settings.mikrotik_port,
+            self.settings.mikrotik_user,
+            self.settings.mikrotik_password,
+            self.settings.mikrotik_key_path,
+        )
 
     def _ensure(self) -> paramiko.SSHClient:
         if self._client is not None:
@@ -96,19 +72,13 @@ class MikroTikClient:
             raise MikroTikError("MikroTik credentials are not configured")
         try:
             client = self._ensure()
-            _stdin, stdout, stderr = client.exec_command(command, timeout=12)
-            out = stdout.read().decode("utf-8", errors="replace")
-            err = stderr.read().decode("utf-8", errors="replace")
-            status = stdout.channel.recv_exit_status()
-            text = (out + "\n" + err).strip()
+            text = exec_command(client, command, timeout=12)
             lowered = text.lower()
             failed = any(marker in lowered for marker in _ROS_FAIL)
             if failed and allow_missing:
                 return text
             if failed:
-                raise MikroTikError(text or f"command failed with status {status}")
-            if status not in (0, -1) and "failure" in lowered:
-                raise MikroTikError(text or f"command failed with status {status}")
+                raise MikroTikError(text or "command failed")
             self.last_error = ""
             self.last_ok = time.time()
             return text
@@ -120,14 +90,7 @@ class MikroTikClient:
             raise MikroTikError(str(exc)) from exc
 
     def probe(self) -> MikroTikStatus:
-        status = MikroTikStatus(
-            connected=False,
-            host=self.settings.mikrotik_host,
-            port=self.settings.mikrotik_port,
-            address_list=self.settings.mikrotik_address_list,
-            last_error=self.last_error,
-            last_ok=self.last_ok,
-        )
+        status = empty_status(self.settings, "mikrotik", self.last_error)
         if not self.configured:
             status.last_error = "Set MIKROTIK_PASSWORD or MIKROTIK_KEY_PATH in .env"
             return status
