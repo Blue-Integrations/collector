@@ -45,6 +45,7 @@ class Runtime:
             horizontal_hosts=settings.horizontal_host_threshold,
             unique_ports=settings.unique_port_threshold,
             allowlist=settings.allowlist_cidrs(),
+            protected=settings.protected_cidr_list(),
         )
         self.mikrotik_status: dict[str, Any] = {
             "connected": False,
@@ -80,6 +81,7 @@ class Runtime:
         self.detector.set_user_allowlist(
             item.strip() for item in allow.split(",") if item.strip()
         )
+        self.detector.set_protected(s.protected_cidr_list())
         self.auto_block = _as_bool(self.db.get_kv("auto_block"), s.auto_block)
         self.purge_ignored_detections()
 
@@ -295,6 +297,7 @@ async def api_overview(request: Request, _: None = Depends(require_login)):
             "horizontal_host_threshold": rt.detector.horizontal_hosts,
             "unique_port_threshold": rt.detector.unique_ports,
             "allowlist": ",".join(str(n) for n in rt.detector.allowlist),
+            "protected": [str(n) for n in rt.detector.protected],
             "public_dns": [str(n) for n in rt.detector.public_dns],
             "ignore_dns_replies": rt.detector.ignore_dns_replies,
         },

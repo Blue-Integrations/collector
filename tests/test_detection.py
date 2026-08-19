@@ -70,6 +70,65 @@ def test_vertical_scan():
     assert vertical.detail["target"] == "192.0.2.8"
 
 
+def test_https_reply_leg_ignored():
+    det = ScanDetector(window_sec=30, vertical_ports=5, unique_ports=5, allowlist=[])
+    hits = []
+    for port in range(40000, 40050):
+        hits.extend(
+            det.observe(
+                Flow(
+                    src_ip="151.244.12.5",
+                    dst_ip="45.148.10.238",
+                    src_port=443,
+                    dst_port=port,
+                    proto=6,
+                    bytes=4000,
+                    packets=8,
+                )
+            )
+        )
+    assert hits == []
+
+
+def test_protected_wan_not_scored():
+    det = ScanDetector(
+        window_sec=30,
+        vertical_ports=5,
+        unique_ports=5,
+        allowlist=[],
+        protected=["151.244.12.0/27"],
+    )
+    hits = []
+    for port in range(1, 20):
+        hits.extend(det.observe(_flow("151.244.12.5", "203.0.113.9", port)))
+    assert hits == []
+    assert det.is_allowed("151.244.12.10")
+
+
+def test_connect_storm_many_src_ports_one_service():
+    det = ScanDetector(window_sec=30, vertical_ports=8, horizontal_hosts=999, unique_ports=999)
+    detections = []
+    for src_port in range(40000, 40020):
+        detections.extend(
+            det.observe(
+                Flow(
+                    src_ip="45.148.10.238",
+                    dst_ip="151.244.12.5",
+                    src_port=src_port,
+                    dst_port=443,
+                    proto=6,
+                    bytes=76,
+                    packets=1,
+                )
+            )
+        )
+    storms = [d for d in detections if d.kind == "connect-storm"]
+    assert storms
+    assert storms[-1].detail["target"] == "151.244.12.5"
+    assert storms[-1].detail["port"] == 443
+    assert not any(d.kind == "vertical" for d in detections)
+
+
 def test_horizontal_scan():
     det = ScanDetector(window_sec=30, vertical_ports=999, horizontal_hosts=8, unique_ports=999)
     detections = []

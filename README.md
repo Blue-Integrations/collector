@@ -199,8 +199,11 @@ Inside a sliding window (default 30s) a source is flagged when it does any of:
 | Vertical | ≥ 40 destination ports against one host |
 | Horizontal | ≥ 40 hosts on one destination port |
 | Spray | ≥ 80 unique destination ports overall |
+| Connect-storm | ≥ 40 source ports against one host:service (HTTPS floods) |
 
-Thresholds and the allowlist are editable on the portal (Thresholds) and persist in SQLite (`data/collector.db`). Public DNS resolvers stay allowlisted even if you edit that field.
+Reply legs from well-known service ports (443, 80, 22, 53, …) to ephemeral client ports are ignored so NetFlow reverse flows do not look like scans from your own servers. `PROTECTED_CIDRS` (default `151.244.12.0/27`) is never auto-blocked.
+
+Thresholds and the allowlist are editable on the portal (Thresholds) and persist in SQLite (`data/collector.db`). Public DNS resolvers and protected WAN prefixes stay allowlisted even if you edit that field.
 
 ## systemd
 

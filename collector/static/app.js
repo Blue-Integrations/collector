@@ -23,6 +23,9 @@ function detailText(row) {
   if (row.kind === "horizontal") {
     return `${d.unique_hosts || row.score} hosts on :${d.port}`;
   }
+  if (row.kind === "connect-storm") {
+    return `${d.unique_src_ports || row.score} src-ports → ${d.target}:${d.port}`;
+  }
   return `${d.unique_ports || row.score} ports / ${d.unique_hosts || "?"} hosts`;
 }
 

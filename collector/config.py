@@ -36,6 +36,7 @@ class Settings(BaseSettings):
 
     auto_block: bool = False
     allowlist: str = "192.168.88.0/24,127.0.0.0/8"
+    protected_cidrs: str = "151.244.12.0/27"
 
     scan_window_sec: int = 30
     vertical_port_threshold: int = 40
@@ -47,6 +48,9 @@ class Settings(BaseSettings):
 
     def allowlist_cidrs(self) -> list[str]:
         return [part.strip() for part in self.allowlist.split(",") if part.strip()]
+
+    def protected_cidr_list(self) -> list[str]:
+        return [part.strip() for part in self.protected_cidrs.split(",") if part.strip()]
 
 
 @lru_cache

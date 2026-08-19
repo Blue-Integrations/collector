@@ -8,9 +8,32 @@ from typing import Iterable
 
 from collector.netflow import Flow
 
-# Reply-leg service ports: NetFlow also exports 1.1.1.1:53 → client:ephemeral
-# which looks like a spray/vertical scan if counted.
-DNS_REPLY_PORTS = {53, 853, 9953, 8853}
+# Server-originated reply legs: HTTPS/SSH/DNS from our hosts → attacker:ephemeral
+# looks like a vertical scan if counted. Skip well-known SOURCE ports to high dest ports.
+SERVER_REPLY_PORTS = {
+    20,
+    21,
+    22,
+    25,
+    53,
+    80,
+    110,
+    143,
+    443,
+    465,
+    587,
+    853,
+    993,
+    995,
+    1194,
+    3306,
+    5432,
+    6379,
+    8080,
+    8443,
+    8853,
+    9953,
+}
 
 # Anycast resolvers only (not Cloudflare/Google CDN ranges).
 PUBLIC_DNS_CIDRS = (
@@ -81,6 +104,7 @@ class ScanDetector:
         unique_ports: int = 80,
         allowlist: Iterable[str] | None = None,
         public_dns: Iterable[str] | None = PUBLIC_DNS_CIDRS,
+        protected: Iterable[str] | None = None,
         ignore_dns_replies: bool = True,
     ) -> None:
         self.window_sec = window_sec
@@ -89,20 +113,26 @@ class ScanDetector:
         self.unique_ports = unique_ports
         self.ignore_dns_replies = ignore_dns_replies
         self.public_dns = _nets(public_dns or [])
+        self.protected = _nets(protected or [])
         self.allowlist = _nets(allowlist or [])
-        # src_ip -> deque of (ts, dst_ip, dst_port, proto)
-        self._events: dict[str, deque[tuple[float, str, int, int]]] = defaultdict(deque)
+        # src_ip -> deque of (ts, dst_ip, dst_port, proto, src_port)
+        self._events: dict[str, deque[tuple[float, str, int, int, int]]] = defaultdict(deque)
 
     def set_user_allowlist(self, cidrs: Iterable[str]) -> None:
         self.allowlist = _nets(cidrs)
+
+    def set_protected(self, cidrs: Iterable[str]) -> None:
+        self.protected = _nets(cidrs)
 
     def is_allowed(self, ip: str) -> bool:
         try:
             addr = ip_address(ip)
         except ValueError:
             return False
-        return any(addr in net for net in self.allowlist) or any(
-            addr in net for net in self.public_dns
+        return (
+            any(addr in net for net in self.allowlist)
+            or any(addr in net for net in self.public_dns)
+            or any(addr in net for net in self.protected)
         )
 
     def observe(self, flow: Flow) -> list[Detection]:
@@ -110,15 +140,15 @@ class ScanDetector:
             return []
         if self.is_allowed(flow.src_ip):
             return []
-        if self.ignore_dns_replies and flow.src_port in DNS_REPLY_PORTS:
+        # Backscatter / server replies (our :443 → their ephemeral source ports)
+        if self.ignore_dns_replies and flow.src_port in SERVER_REPLY_PORTS and flow.dst_port >= 1024:
             return []
-        # ICMP / non-transport still counts as a dest "port" of 0; skip those for scan math
         if flow.proto not in (6, 17) or flow.dst_port == 0:
             return []
 
         now = time()
         q = self._events[flow.src_ip]
-        q.append((now, flow.dst_ip, flow.dst_port, flow.proto))
+        q.append((now, flow.dst_ip, flow.dst_port, flow.proto, flow.src_port))
         cutoff = now - self.window_sec
         while q and q[0][0] < cutoff:
             q.popleft()
@@ -130,9 +160,11 @@ class ScanDetector:
         dst_ports = {item[2] for item in q}
         per_host: dict[str, set[int]] = defaultdict(set)
         per_port: dict[int, set[str]] = defaultdict(set)
-        for _ts, dst_ip, dst_port, _proto in q:
+        per_service: dict[tuple[str, int], set[int]] = defaultdict(set)
+        for _ts, dst_ip, dst_port, _proto, src_port in q:
             per_host[dst_ip].add(dst_port)
             per_port[dst_port].add(dst_ip)
+            per_service[(dst_ip, dst_port)].add(src_port)
 
         detections: list[Detection] = []
         worst_host, worst_host_ports = max(per_host.items(), key=lambda kv: len(kv[1]))
@@ -178,6 +210,26 @@ class ScanDetector:
                     detail={
                         "unique_ports": len(dst_ports),
                         "unique_hosts": len(dst_ips),
+                        "window_sec": self.window_sec,
+                        "flows": len(q),
+                    },
+                )
+            )
+
+        # Many source ports at one service (HTTPS flood) — not a dest-port scan,
+        # so vertical/spray miss it and the reply leg used to blame the server.
+        worst_svc, worst_src_ports = max(per_service.items(), key=lambda kv: len(kv[1]))
+        if len(worst_src_ports) >= self.vertical_ports:
+            target, port = worst_svc
+            detections.append(
+                Detection(
+                    src_ip=flow.src_ip,
+                    kind="connect-storm",
+                    score=len(worst_src_ports),
+                    detail={
+                        "target": target,
+                        "port": port,
+                        "unique_src_ports": len(worst_src_ports),
                         "window_sec": self.window_sec,
                         "flows": len(q),
                     },

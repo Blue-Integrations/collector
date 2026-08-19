@@ -225,6 +225,7 @@ table.dense td { padding-top: 6px; padding-bottom: 6px; }
 .kind.vertical { color: var(--accent); border-color: var(--accent); }
 .kind.horizontal { color: var(--warn); border-color: var(--warn); }
 .kind.spray { color: var(--bad); border-color: var(--bad); }
+.kind.connect-storm { color: var(--accent); border-color: var(--warn); }
 
 .inline {
   display: flex;
