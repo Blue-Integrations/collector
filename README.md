@@ -49,6 +49,113 @@ RouterOS 7 also accepts IPFIX (`version=ipfix`). The probe understands v5, v9, a
 
 UDP 2055 must be reachable from the router to the collector. If the collector is on the LAN, no extra NAT is required.
 
+## Cisco: export NetFlow
+
+The probe accepts **v5, v9, and IPFIX**. Prefer **v9** (or IPFIX on IOS-XE). Send UDP **2055** to `<COLLECTOR_IP>`. Sampling is optional; unsampled is better for scanner detection.
+
+Cisco export is ingest-only. Auto-block still SSHs the MikroTik unless you add a separate IOS ACL workflow.
+
+### IOS / IOS-XE — Flexible NetFlow (v9)
+
+```
+flow record COLLECTOR-REC
+ match ipv4 protocol
+ match ipv4 source address
+ match ipv4 destination address
+ match transport source-port
+ match transport destination-port
+ match interface input
+ collect counter bytes
+ collect counter packets
+ collect transport tcp flags
+!
+flow exporter COLLECTOR-EXP
+ destination <COLLECTOR_IP>
+ transport udp 2055
+ export-protocol netflow-v9
+ source <EXPORT_INTERFACE>
+!
+flow monitor COLLECTOR-MON
+ record COLLECTOR-REC
+ exporter COLLECTOR-EXP
+ cache timeout active 30
+ cache timeout inactive 15
+!
+interface GigabitEthernet0/0
+ ip flow monitor COLLECTOR-MON input
+ ip flow monitor COLLECTOR-MON output
+```
+
+IPv6: duplicate the record with `ipv6` matches, or add a second monitor.
+
+### Older IOS — original NetFlow (v5)
+
+```
+ip flow-export version 5
+ip flow-export destination <COLLECTOR_IP> 2055
+ip flow-cache timeout active 1
+ip flow-cache timeout inactive 15
+interface GigabitEthernet0/0
+ ip route-cache flow
+```
+
+NX-OS uses `feature netflow` plus `flow exporter` / `flow monitor` — same idea: exporter UDP 2055, v9, 5-tuple + bytes/packets.
+
+## Juniper: export J-Flow / IPFIX
+
+Junos calls this **J-Flow** (v5/v9) or **IPFIX**. Prefer **v9 or IPFIX**. Sampling is the usual MX/SRX pattern.
+
+Templates must include IPv4/IPv6 addresses, L4 ports, protocol, and byte/packet counters — that is what the detector reads.
+
+### MX / PTX — sampling to IPFIX
+
+```
+forwarding-options {
+    sampling {
+        instance COLLECTOR {
+            input {
+                rate 1;
+            }
+            family inet {
+                output {
+                    flow-server <COLLECTOR_IP> {
+                        port 2055;
+                        version-ipfix {
+                            template {
+                                ipv4;
+                            }
+                        }
+                    }
+                    inline-jflow {
+                        source-address <ROUTER_LO0>;
+                    }
+                }
+            }
+        }
+    }
+}
+interfaces {
+    ge-0/0/0 {
+        unit 0 {
+            family inet {
+                sampling {
+                    input;
+                    output;
+                }
+            }
+        }
+    }
+}
+```
+
+For NetFlow v9 instead of IPFIX, use `version9 { template { ipv4; } }` on `flow-server` where the platform supports it. `rate 1` is every packet; raise the rate if the RE/PFE cannot keep up (scanner detection gets worse as sampling increases).
+
+### SRX
+
+Enable flow export on the zone/interfaces you care about (`forwarding-options sampling`; some releases also use `security forwarding-options`). Destination remains `<COLLECTOR_IP>` UDP **2055**.
+
+Allow UDP/2055 from the exporter to the collector on any intermediate firewall.
+
 ## MikroTik: SSH blocking
 
 The portal logs into `192.168.88.3` port `22232` (overridable in `.env`) and:
