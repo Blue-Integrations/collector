@@ -27,6 +27,16 @@ class MikroTikStatus:
     last_ok: float | None = None
 
 
+_ROS_FAIL = (
+    "no such item",
+    "syntax error",
+    "bad command",
+    "failure:",
+    "expected end of command",
+    "invalid value",
+)
+
+
 class MikroTikClient:
     """SSH control plane for RouterOS address-list blocking."""
 
@@ -81,7 +91,7 @@ class MikroTikClient:
         self._client = self._connect()
         return self._client
 
-    def run(self, command: str) -> str:
+    def run(self, command: str, allow_missing: bool = False) -> str:
         if not self.configured:
             raise MikroTikError("MikroTik credentials are not configured")
         try:
@@ -91,7 +101,13 @@ class MikroTikClient:
             err = stderr.read().decode("utf-8", errors="replace")
             status = stdout.channel.recv_exit_status()
             text = (out + "\n" + err).strip()
-            if status not in (0, -1) and "failure" in text.lower():
+            lowered = text.lower()
+            failed = any(marker in lowered for marker in _ROS_FAIL)
+            if failed and allow_missing:
+                return text
+            if failed:
+                raise MikroTikError(text or f"command failed with status {status}")
+            if status not in (0, -1) and "failure" in lowered:
                 raise MikroTikError(text or f"command failed with status {status}")
             self.last_error = ""
             self.last_ok = time.time()
@@ -138,8 +154,13 @@ class MikroTikClient:
         ips: list[str] = []
         for path in ("/ip firewall address-list", "/ipv6 firewall address-list"):
             try:
-                raw = self.run(f"{path} print terse without-paging where list={name}")
+                raw = self.run(
+                    f"{path} print terse without-paging where list={name}",
+                    allow_missing=True,
+                )
             except MikroTikError:
+                continue
+            if _is_missing_menu(raw):
                 continue
             for match in re.finditer(r"address=([0-9a-fA-F:.]+)", raw):
                 ips.append(match.group(1))
@@ -149,40 +170,94 @@ class MikroTikClient:
         path = _list_path(ip)
         name = self.settings.mikrotik_address_list
         timeout = self.settings.mikrotik_block_timeout
-        existing = self.run(f"{path} print count-only where list={name} address={ip}")
+        existing = self.run(
+            f"{path} print count-only where list={name} address={ip}",
+            allow_missing=True,
+        )
         if _count(existing) > 0:
+            self._drop_connections(ip)
             return
         safe_comment = comment.replace('"', "'")[:80]
         self.run(
             f"{path} add list={name} address={ip} timeout={timeout} comment=\"{safe_comment}\""
         )
+        self._drop_connections(ip)
 
     def unblock(self, ip: str) -> None:
         path = _list_path(ip)
         name = self.settings.mikrotik_address_list
-        self.run(f"{path} remove [find where list={name} address={ip}]")
+        self.run(
+            f"{path} remove [find where list={name} address={ip}]",
+            allow_missing=True,
+        )
+
+    def _drop_connections(self, ip: str) -> None:
+        """Kill already-established / fasttracked sessions so a new block takes effect."""
+        escaped = re.escape(ip)
+        table = "/ipv6 firewall connection" if ":" in ip else "/ip firewall connection"
+        self.run(
+            f'{table} remove [find where src-address~"{escaped}"]',
+            allow_missing=True,
+        )
+        self.run(
+            f'{table} remove [find where dst-address~"{escaped}"]',
+            allow_missing=True,
+        )
 
     def ensure_filter_rules(self) -> None:
-        """Make sure traffic from the address-list is dropped on input and forward."""
-        name = self.settings.mikrotik_address_list
-        self._ensure_drop("/ip firewall filter", name, "netflow-collector:drop-scanners")
-        try:
-            self._ensure_drop("/ipv6 firewall filter", name, "netflow-collector:drop-scanners6")
-        except MikroTikError:
-            pass
+        """One IPv4 forward drop. Other chains never see this traffic."""
+        self._scrub_ipv6_collector_rules()
+        self._scrub_unused_ip_rules()
+        self._ensure_ip_drop("forward", "netflow-collector:drop-scanners-fwd")
         self.filter_ready = True
 
-    def _ensure_drop(self, path: str, name: str, comment: str) -> None:
-        existing = self.run(f'{path} print count-only where comment="{comment}"')
+    def _scrub_ipv6_collector_rules(self) -> None:
+        leftover = self.run(
+            '/ipv6 firewall filter print count-only where comment~"netflow-collector"',
+            allow_missing=True,
+        )
+        if _count(leftover) == 0:
+            return
+        self.run(
+            '/ipv6 firewall filter remove [find comment~"netflow-collector"]',
+            allow_missing=True,
+        )
+
+    def _scrub_unused_ip_rules(self) -> None:
+        """Remove extra collector rules that sit on chains packets never enter."""
+        extras = (
+            ("/ip firewall filter", "netflow-collector:drop-scanners"),
+            ("/ip firewall filter", "netflow-collector:drop-scanners-fwd-in"),
+            ("/ip firewall filter", "netflow-collector:drop-scanners-fwd-in2"),
+            ("/ip firewall raw", "netflow-collector:drop-scanners-raw"),
+        )
+        for path, comment in extras:
+            found = self.run(
+                f'{path} print count-only where comment="{comment}"',
+                allow_missing=True,
+            )
+            if _count(found) == 0:
+                continue
+            self.run(
+                f'{path} remove [find comment="{comment}"]',
+                allow_missing=True,
+            )
+
+    def _ensure_ip_drop(self, chain: str, comment: str) -> None:
+        name = self.settings.mikrotik_address_list
+        existing = self.run(
+            f'/ip firewall filter print count-only where comment="{comment}"'
+        )
         if _count(existing) > 0:
             return
         self.run(
-            f"{path} add chain=input action=drop "
-            f'src-address-list={name} comment="{comment}" place-before=0'
+            "/ip firewall filter add "
+            f"chain={chain} action=drop src-address-list={name} comment=\"{comment}\""
         )
+        # New rules append at the bottom; drop must run before later accepts.
         self.run(
-            f"{path} add chain=forward action=drop "
-            f'src-address-list={name} comment="{comment}-fwd"'
+            f'/ip firewall filter move [find comment="{comment}"] destination=0',
+            allow_missing=True,
         )
 
 
@@ -198,8 +273,15 @@ def _first_line(text: str) -> str:
     return ""
 
 
+def _is_missing_menu(text: str) -> bool:
+    lowered = text.lower()
+    return "no such item" in lowered or "bad command" in lowered or "syntax error" in lowered
+
+
 def _count(text: str) -> int:
-    for token in text.replace("\n", " ").split():
+    """Parse `print count-only` (a lone integer). Ignore 'line 1' in error strings."""
+    for line in text.strip().splitlines():
+        token = line.strip()
         if token.isdigit():
             return int(token)
     return 0

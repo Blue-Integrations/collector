@@ -161,7 +161,10 @@ Allow UDP/2055 from the exporter to the collector on any intermediate firewall.
 The portal logs into `192.168.88.3` port `22232` (overridable in `.env`) and:
 
 1. Adds/removes IPs on address-list `blocked-scanners` (timeout `1d` by default)
-2. Ensures drop rules exist on `input` and `forward` for that list (IPv4 and IPv6)
+2. Ensures one IPv4 `chain=forward` drop for that list (added once; not reordered later)
+3. Removes tracked connections from a newly blocked IP so existing TCP sessions die immediately
+
+IPv6 filter is not managed. Packets only evaluate rules for their chain, so extra `input` / `forward-in` drops never see forwarded WAN traffic. Bridged L2 (same VLAN on `bridge-gig`, `use-ip-firewall=no`) never hits IP filter at all.
 
 Create a dedicated user if you do not want to use `admin`:
 
