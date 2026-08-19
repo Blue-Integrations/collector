@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Collector — sign in</title>
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body class="login-body">
+  <main class="login-card">
+    <p class="eyebrow">NetFlow · MikroTik</p>
+    <h1>Collector</h1>
+    <p class="lede">Sign in to the monitoring portal.</p>
+    {% if error %}
+    <p class="flash error">{{ error }}</p>
+    {% endif %}
+    <form method="post" action="/login">
+      <label>Username
+        <input type="text" name="username" autocomplete="username" required autofocus>
+      </label>
+      <label>Password
+        <input type="password" name="password" autocomplete="current-password" required>
+      </label>
+      <button type="submit">Continue</button>
+    </form>
+  </main>
+</body>
+</html>

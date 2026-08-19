@@ -1,0 +1,15 @@
+[Unit]
+Description=NetFlow collector portal
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/collector
+EnvironmentFile=/opt/collector/.env
+ExecStart=/opt/collector/.venv/bin/python -m collector
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

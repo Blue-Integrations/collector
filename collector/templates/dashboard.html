@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Collector</title>
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+  <header class="top">
+    <div>
+      <p class="eyebrow">Traffic flow monitor</p>
+      <h1>Collector</h1>
+    </div>
+    <div class="top-meta">
+      <div class="status-stack">
+        <span class="pill" id="probe-pill">probe :{{ netflow_port }}</span>
+        <span class="pill" id="mt-pill">mikrotik {{ mikrotik_host }}:{{ mikrotik_port }}</span>
+      </div>
+      <form method="post" action="/logout">
+        <button class="ghost" type="submit">Sign out</button>
+      </form>
+    </div>
+  </header>
+
+  {% if weak_password %}
+  <p class="banner">Portal password is still the default. Set <code>PORTAL_PASSWORD</code> in <code>.env</code>.</p>
+  {% endif %}
+
+  <section class="metrics" id="metrics">
+    <article>
+      <p class="label">Flows / 10s</p>
+      <p class="value" id="m-rate">0</p>
+    </article>
+    <article>
+      <p class="label">Flows received</p>
+      <p class="value" id="m-flows">0</p>
+    </article>
+    <article>
+      <p class="label">Active scanners</p>
+      <p class="value warn" id="m-scans">0</p>
+    </article>
+    <article>
+      <p class="label">Blocked on router</p>
+      <p class="value" id="m-blocks">0</p>
+    </article>
+  </section>
+
+  <section class="toolbar">
+    <label class="toggle">
+      <input type="checkbox" id="auto-block">
+      <span>Auto-block on MikroTik</span>
+    </label>
+    <button type="button" id="btn-test" class="ghost">Test SSH</button>
+    <button type="button" id="btn-settings" class="ghost">Thresholds</button>
+    <p class="hint" id="mt-hint"></p>
+  </section>
+
+  <form id="settings-panel" class="settings hidden">
+    <label>Window (sec)
+      <input type="number" id="s-window" min="5" max="600">
+    </label>
+    <label>Vertical ports
+      <input type="number" id="s-vertical" min="5" max="10000">
+    </label>
+    <label>Horizontal hosts
+      <input type="number" id="s-horizontal" min="5" max="10000">
+    </label>
+    <label>Spray unique ports
+      <input type="number" id="s-spray" min="5" max="10000">
+    </label>
+    <label class="grow">Allowlist CIDRs
+      <input type="text" id="s-allow" placeholder="192.168.88.0/24,10.0.0.0/8">
+    </label>
+    <button type="submit">Save</button>
+  </form>
+
+  <div class="split">
+    <section class="panel">
+      <header>
+        <h2>Detected scanners</h2>
+        <p class="muted">Sources hitting many ports or hosts in the detection window.</p>
+      </header>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Source</th>
+              <th>Kind</th>
+              <th>Score</th>
+              <th>Detail</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody id="detections"></tbody>
+        </table>
+      </div>
+    </section>
+    <section class="panel">
+      <header>
+        <h2>MikroTik address-list</h2>
+        <p class="muted" id="list-name">blocked-scanners</p>
+      </header>
+      <form id="manual-block" class="inline">
+        <input type="text" id="manual-ip" placeholder="Block IPv4 / IPv6" required>
+        <button type="submit">Block</button>
+      </form>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>IP</th>
+              <th>Source</th>
+              <th>Reason</th>
+              <th>Age</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody id="blocks"></tbody>
+        </table>
+      </div>
+    </section>
+  </div>
+
+  <section class="panel">
+    <header>
+      <h2>Recent sampled flows</h2>
+      <p class="muted">Every eighth flow is stored so the table stays readable.</p>
+    </header>
+    <div class="table-wrap">
+      <table class="dense">
+        <thead>
+          <tr>
+            <th>Source</th>
+            <th>Destination</th>
+            <th>Proto</th>
+            <th>Bytes</th>
+          </tr>
+        </thead>
+        <tbody id="flows"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="panel">
+    <header>
+      <h2>Event log</h2>
+    </header>
+    <ul class="log" id="events"></ul>
+  </section>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
