@@ -264,6 +264,18 @@ button:hover { filter: brightness(1.08); }
 .settings.hidden { display: none; }
 .settings .grow { grid-column: span 1; }
 .settings label { margin: 0; }
+.upgrade-box {
+  grid-column: 1 / -1;
+  border-top: 1px solid var(--line);
+  padding-top: 12px;
+  margin-top: 4px;
+}
+.upgrade-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+}
 
 .split {
   display: grid;

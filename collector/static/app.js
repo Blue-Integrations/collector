@@ -81,6 +81,7 @@ function renderOverview(data) {
   $("s-horizontal").value = data.thresholds.horizontal_host_threshold;
   $("s-spray").value = data.thresholds.unique_port_threshold;
   $("s-allow").value = data.thresholds.allowlist;
+  $("upgrade-line").textContent = `Version ${data.version || "?"}`;
 
   const detBody = $("detections");
   detBody.innerHTML = "";
@@ -248,6 +249,47 @@ $("vendor-pick").addEventListener("change", async (ev) => {
   } catch (err) {
     alert(err.message);
     await refresh();
+  }
+});
+
+$("btn-upgrade-check").addEventListener("click", async () => {
+  $("btn-upgrade-check").disabled = true;
+  try {
+    const status = await api("/api/upgrade/status");
+    $("upgrade-hint").textContent = status.message || (status.update_available ? "Update available" : "Up to date");
+    if (status.git) {
+      $("upgrade-line").textContent = `Version ${status.installed_version} · ${status.branch} @ ${status.commit}`;
+    }
+  } catch (err) {
+    $("upgrade-hint").textContent = err.message;
+  } finally {
+    $("btn-upgrade-check").disabled = false;
+  }
+});
+
+$("btn-upgrade").addEventListener("click", async () => {
+  if (!confirm("Pull latest code, pip install, and restart if configured?")) return;
+  $("btn-upgrade").disabled = true;
+  try {
+    const result = await api("/api/upgrade", {
+      method: "POST",
+      body: JSON.stringify({ restart: true }),
+    });
+    $("upgrade-hint").textContent = result.message || "Upgrade finished";
+    if (result.previous_version && result.installed_version) {
+      $("upgrade-line").textContent = `Version ${result.installed_version} (was ${result.previous_version})`;
+    }
+    if (result.restarted) {
+      $("upgrade-hint").textContent += " — reloading…";
+      setTimeout(() => window.location.reload(), 3000);
+    } else {
+      alert("Upgrade complete. Restart the collector process to load new code.");
+    }
+  } catch (err) {
+    alert(err.message);
+    $("upgrade-hint").textContent = err.message;
+  } finally {
+    $("btn-upgrade").disabled = false;
   }
 });
 

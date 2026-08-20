@@ -65,6 +65,11 @@ class Settings(BaseSettings):
     demo: bool = False
     db_path: Path = Field(default_factory=lambda: DATA_DIR / "collector.db")
 
+    upgrade_git_remote: str = "origin"
+    upgrade_git_branch: str = ""
+    upgrade_restart_cmd: str = ""
+    upgrade_allow_api: bool = True
+
     def allowlist_cidrs(self) -> list[str]:
         return [part.strip() for part in self.allowlist.split(",") if part.strip()]
 

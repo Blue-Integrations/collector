@@ -71,6 +71,123 @@ Dashboard metrics or `GET /api/dump` (API key):
 
 If **`dropped` stays at 0** and scans look sane, export bandwidth is not your bottleneck. Scale by **flow record rate**, not Gbps of production traffic.
 
+## Upgrade
+
+The collector can update itself from a git checkout (`git pull --ff-only` + `pip install -e .`). Manual installs without git are supported too.
+
+**Requirements:** `git`, network access to the remote, and `pip` for the same Python that runs the portal (venv or system). The upgrade user must be able to write the install directory.
+
+### CLI (recommended for production)
+
+```bash
+cd /root/collector   # or /opt/collector
+source .venv/bin/activate   # if you use a venv
+
+# see whether origin is ahead (contacts remote)
+python3 -m collector upgrade --check
+
+# check local state only (offline)
+python3 -m collector upgrade --check --no-fetch
+
+# pull, pip install -e .
+python3 -m collector upgrade
+
+# pull on a specific branch
+python3 -m collector upgrade --branch main
+
+# after copying files by hand (no git)
+python3 -m collector upgrade --no-git
+
+# reinstall deps only
+python3 -m collector upgrade --no-git --no-install   # noop on deps
+python3 -m collector upgrade --no-install            # pull only, skip pip
+
+# run a restart command when finished (or set UPGRADE_RESTART_CMD in .env)
+python3 -m collector upgrade --restart "systemctl restart collector"
+```
+
+| Flag | Meaning |
+| --- | --- |
+| `--check` | Report version / git commit; do not change anything |
+| `--no-fetch` | With `--check`, compare without contacting the remote |
+| `--no-git` | Skip `git pull` (manual tree copy) |
+| `--no-install` | Skip `pip install -e .` |
+| `--remote` | Git remote (default: `UPGRADE_GIT_REMOTE` or `origin`) |
+| `--branch` | Git branch (default: current branch or `UPGRADE_GIT_BRANCH`) |
+| `--restart` | Shell command after upgrade (default: `UPGRADE_RESTART_CMD`) |
+
+`--check` exit codes: **0** up to date, **2** update available, **1** error.
+
+Example check output:
+
+```
+version: 0.1.0
+root:    /opt/collector
+git:     main @ f54e109
+remote:  origin
+status:  3 commit(s) behind origin/main
+behind:  3 (a1b2c3d)
+```
+
+### `.env`
+
+```
+UPGRADE_GIT_REMOTE=origin
+UPGRADE_GIT_BRANCH=main
+UPGRADE_RESTART_CMD=systemctl restart collector
+UPGRADE_ALLOW_API=true
+```
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `UPGRADE_GIT_REMOTE` | `origin` | Remote to fetch/pull |
+| `UPGRADE_GIT_BRANCH` | *(current branch)* | Branch to pull; empty = stay on checked-out branch |
+| `UPGRADE_RESTART_CMD` | *(empty)* | Run after a successful upgrade (systemd, docker, etc.) |
+| `UPGRADE_ALLOW_API` | `true` | Allow portal/API upgrade buttons |
+
+Set `UPGRADE_ALLOW_API=false` to disable in-portal upgrades (CLI still works).
+
+### Portal
+
+Open **Thresholds** → version line at the bottom:
+
+- **Check updates** — calls the same logic as `upgrade --check`
+- **Upgrade now** — `git pull` + `pip install -e .`; runs `UPGRADE_RESTART_CMD` when set
+
+Requires a signed-in session. The running process must be restarted (manually or via `UPGRADE_RESTART_CMD`) before new Python code is loaded.
+
+### HTTP API (session auth)
+
+Dashboard session cookie (same as the UI), not the dump API key:
+
+```bash
+# check for updates
+curl -sS -b "collector=<session-cookie>" http://<collector-ip>:8080/api/upgrade/status
+
+# run upgrade (optional JSON body)
+curl -sS -X POST -b "collector=<session-cookie>" \
+  -H "Content-Type: application/json" \
+  -d '{"restart": true, "git": true, "install": true}' \
+  http://<collector-ip>:8080/api/upgrade
+```
+
+Returns installed version, git commit, commits behind, and upgrade log lines.
+
+### systemd install
+
+Typical production path after the first deploy:
+
+```bash
+sudo systemctl stop collector
+cd /opt/collector && source .venv/bin/activate
+python3 -m collector upgrade
+sudo systemctl start collector
+```
+
+Or set `UPGRADE_RESTART_CMD=systemctl restart collector` in `/opt/collector/.env` and run `python3 -m collector upgrade` from the portal or CLI — the service restarts itself when the upgrade finishes.
+
+Manual installs without git: copy the new tree over the install directory, then `python3 -m collector upgrade --no-git`.
+
 ## MikroTik: export NetFlow
 
 Point **traffic-flow** at the collector, not at the router itself.
@@ -308,6 +425,8 @@ sudo systemctl enable --now collector
 
 Health check: `GET /api/health` (no auth). The dashboard APIs require a session.
 
+After the first install, use [Upgrade](#upgrade) to pull new releases (`python3 -m collector upgrade` or the portal **Thresholds** panel).
+
 ## JSON dumps (API key)
 
 `SECRET_KEY` in `.env` is the API access key. Talker counters reset when the process restarts; blocked IPs come from the local DB plus the active router access list.
@@ -345,4 +464,5 @@ app.include_router(router)
 | `collector/cisco.py` | IOS/XE object-group + ACL |
 | `collector/juniper.py` | Junos prefix-list + filter |
 | `collector/app.py` | FastAPI portal |
+| `collector/upgrade.py` | git pull + pip self-upgrade |
 | `collector/templates/` | login + dashboard |

@@ -9,6 +9,7 @@ class Health(BaseModel):
     ok: bool
     netflow_port: int
     flows: int
+    version: str = "0.1.0"
     vendor: str = "mikrotik"
     router: bool | None = None
     mikrotik: bool | None = None

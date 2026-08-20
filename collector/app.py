@@ -25,7 +25,7 @@ from collector.detection import ScanDetector
 from collector.netflow import Flow, NetflowParser, proto_name
 from collector.probe import ProbeStats, start_probe
 from collector.schemas import BlockedDump, FullDump, Health, TalkersDump
-from collector.talkers import TalkerTracker
+from collector.upgrade import UpgradeError, check_upgrade, installed_version, run_upgrade
 
 STATIC = Path(__file__).parent / "static"
 TEMPLATES = Path(__file__).parent / "templates"
@@ -158,7 +158,7 @@ app = FastAPI(
         "Machine JSON dumps live under `/api/dump`. "
         "Send header `X-API-Key` with the same value as `SECRET_KEY`."
     ),
-    version="0.1.0",
+    version=installed_version(),
     docs_url="/docs",
     redoc_url="/redoc",
     lifespan=lifespan,
@@ -323,6 +323,7 @@ async def api_overview(request: Request, _: None = Depends(require_login)):
         "flows": flows,
         "events": rt.db.events(30),
         "now": time.time(),
+        "version": installed_version(),
     }
 
 
@@ -399,6 +400,49 @@ async def api_router_test(request: Request, _: None = Depends(require_login)):
     return rt.mikrotik_status
 
 
+@app.get("/api/upgrade/status")
+async def api_upgrade_status(request: Request, _: None = Depends(require_login)):
+    rt = get_runtime()
+    if not rt.settings.upgrade_allow_api:
+        raise HTTPException(status_code=403, detail="upgrade API disabled in .env")
+    status = await asyncio.to_thread(
+        check_upgrade,
+        rt.settings.upgrade_git_remote,
+        rt.settings.upgrade_git_branch,
+        True,
+    )
+    return status.__dict__
+
+
+@app.post("/api/upgrade")
+async def api_upgrade_run(request: Request, _: None = Depends(require_login)):
+    rt = get_runtime()
+    if not rt.settings.upgrade_allow_api:
+        raise HTTPException(status_code=403, detail="upgrade API disabled in .env")
+    body: dict[str, Any] = {}
+    if request.headers.get("content-type", "").startswith("application/json"):
+        body = await request.json()
+    restart = bool(body.get("restart"))
+    restart_cmd = rt.settings.upgrade_restart_cmd if restart else ""
+    try:
+        result = await asyncio.to_thread(
+            run_upgrade,
+            remote=rt.settings.upgrade_git_remote,
+            branch=rt.settings.upgrade_git_branch,
+            restart_cmd=restart_cmd,
+            use_git=body.get("git", True),
+            install_deps=body.get("install", True),
+        )
+    except UpgradeError as exc:
+        rt.db.log(f"upgrade failed: {exc}", "error")
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    rt.db.log(
+        f"upgraded {result.previous_version} -> {result.installed_version}"
+        + (f" ({result.previous_commit}->{result.new_commit})" if result.new_commit else "")
+    )
+    return result.__dict__
+
+
 @app.get("/api/health", response_model=Health, tags=["ops"])
 async def api_health():
     rt = get_runtime()
@@ -406,6 +450,7 @@ async def api_health():
         "ok": True,
         "netflow_port": rt.settings.netflow_port,
         "flows": rt.stats.flows,
+        "version": installed_version(),
         "mikrotik": rt.mikrotik_status.get("connected"),
         "router": rt.mikrotik_status.get("connected"),
         "vendor": rt.vendor,
