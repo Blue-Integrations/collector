@@ -49,6 +49,7 @@ class Runtime:
             protected=settings.protected_cidr_list(),
         )
         self.mikrotik_status: dict[str, Any] = _status_dict(settings, vendor)
+        self.router_blocked: set[str] = set()
         self.sample_counter = 0
         self.talkers = TalkerTracker()
         self.auto_block = _as_bool(self.db.get_kv("auto_block"), settings.auto_block)
@@ -68,6 +69,7 @@ class Runtime:
             self.blocker.close()
             self.blocker = make_blocker(self.settings, chosen)
             self.mikrotik_status = _status_dict(self.settings, chosen)
+            self.router_blocked = set()
         return chosen
 
     def apply_thresholds(self) -> None:
@@ -291,9 +293,11 @@ async def dashboard(request: Request):
 @app.get("/api/overview")
 async def api_overview(request: Request, _: None = Depends(require_login)):
     rt = get_runtime()
-    detections = [
-        row for row in rt.db.detections(limit=80) if not rt.detector.is_allowed(row["src_ip"])
-    ]
+    detections = visible_detections(
+        rt.db.detections(limit=80),
+        rt.router_blocked,
+        rt.detector.is_allowed,
+    )
     blocks = rt.db.blocks(active_only=True)
     flows = rt.db.recent_flows(60)
     return {
@@ -344,6 +348,7 @@ async def api_unblock(request: Request, _: None = Depends(require_login)):
     except RouterError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     rt.db.deactivate_block(ip)
+    rt.router_blocked.discard(ip)
     rt.db.log(f"unblocked {ip}")
     return {"ok": True, "ip": ip}
 
@@ -387,6 +392,7 @@ async def api_router_test(request: Request, _: None = Depends(require_login)):
     status = await asyncio.to_thread(rt.blocker.probe)
     rt.mikrotik_status = status.__dict__
     if status.connected:
+        await _refresh_router_blocked(rt)
         rt.db.log(f"{label} reachable ({status.identity} {status.version})")
     else:
         rt.db.log(f"{label} check failed: {status.last_error}", "error")
@@ -479,6 +485,27 @@ def _validate_ip(ip: str) -> None:
         raise HTTPException(status_code=400, detail="invalid IP address") from exc
 
 
+def visible_detections(
+    rows: list[dict[str, Any]],
+    router_blocked: set[str],
+    is_allowed,
+) -> list[dict[str, Any]]:
+    """Drop allowlisted sources and IPs already on the router access list."""
+    return [
+        row
+        for row in rows
+        if not is_allowed(row["src_ip"]) and row["src_ip"] not in router_blocked
+    ]
+
+
+async def _refresh_router_blocked(rt: Runtime) -> None:
+    try:
+        listed = await asyncio.to_thread(rt.blocker.list_blocked)
+    except RouterError:
+        return
+    rt.router_blocked = set(listed)
+
+
 async def _block_ip(rt: Runtime, ip: str, reason: str, source: str) -> None:
     if rt.detector.is_allowed(ip):
         raise HTTPException(status_code=400, detail=f"{ip} is on the allowlist")
@@ -488,6 +515,7 @@ async def _block_ip(rt: Runtime, ip: str, reason: str, source: str) -> None:
         rt.db.log(f"block failed for {ip}: {exc}", "error")
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     rt.db.add_block(ip, reason, source, rt.settings.mikrotik_block_timeout)
+    rt.router_blocked.add(ip)
     rt.db.log(f"blocked {ip} ({source}: {reason})")
 
 
@@ -536,6 +564,8 @@ async def _router_watch(rt: Runtime) -> None:
         try:
             status = await asyncio.to_thread(rt.blocker.probe)
             rt.mikrotik_status = status.__dict__
+            if status.connected:
+                await _refresh_router_blocked(rt)
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -557,6 +587,7 @@ async def _unblock_allowlisted(rt: Runtime) -> None:
             rt.db.log(f"could not unblock allowlisted {ip}: {exc}", "error")
             continue
         rt.db.deactivate_block(ip)
+        rt.router_blocked.discard(ip)
         rt.db.log(f"unblocked allowlisted {ip}")
 
 
