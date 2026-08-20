@@ -33,6 +33,44 @@ To exercise the UI without live exports:
 python -m collector --demo
 ```
 
+## Capacity and bandwidth
+
+The collector is **not in the data path**. User, web, and WAN traffic is routed or switched elsewhere. Only **NetFlow / IPFIX export** reaches the host: small UDP datagrams on port **2055** from the exporter.
+
+| Traffic | Through collector? |
+| --- | --- |
+| Monitored production traffic | **No** |
+| NetFlow / IPFIX export | **Yes** (UDP :2055) |
+
+Export volume is usually far below line rate. Exporters send **flow records** (5-tuple + byte/packet counters), not a copy of every packet. Rough guide:
+
+- **~1–5% of monitored traffic** if export is aggressive and unsampled
+- **Much less** with MikroTik cache/timeouts or Juniper/Cisco sampling
+
+Example: **1 Gbps** monitored might produce **~10–50 Mbps** of export in a heavy case, often **under a few Mbps** with normal cache settings.
+
+### What this process can handle
+
+One Python asyncio process parses UDP and runs scan detection. Internal limits from the code:
+
+| Limit | Value | Effect |
+| --- | --- | --- |
+| Flow queue | 20,000 records | Overflow increments `dropped` — those flows skip detection |
+| Flow samples in SQLite | every 8th flow | Keeps the dashboard readable |
+| Router SSH probe | every 20s | Block list sync, not per-packet |
+
+For a **single edge router** exporting to a LAN collector, **hundreds to a few thousand flow records per second** is comfortable. It is not built as a carrier-grade collector for many high-volume exporters at unsampled line rate.
+
+### What to watch
+
+Dashboard metrics or `GET /api/dump` (API key):
+
+- **`flows_per_sec`** — export rate arriving at the probe
+- **`dropped`** — queue full; detection is missing events
+- **`parse_errors`** — bad or missing v9/IPFIX templates
+
+If **`dropped` stays at 0** and scans look sane, export bandwidth is not your bottleneck. Scale by **flow record rate**, not Gbps of production traffic.
+
 ## MikroTik: export NetFlow
 
 Point **traffic-flow** at the collector, not at the router itself.
