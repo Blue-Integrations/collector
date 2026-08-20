@@ -1,14 +1,20 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Collector — sign in</title>
+  <script>
+    (function () {
+      var t = localStorage.getItem("collector-theme");
+      document.documentElement.setAttribute("data-theme", t === "light" ? "light" : "dark");
+    })();
+  </script>
   <link rel="stylesheet" href="/static/app.css">
 </head>
 <body class="login-body">
   <main class="login-card">
-    <p class="eyebrow">NetFlow · MikroTik</p>
+    <p class="eyebrow">NetFlow · scanners</p>
     <h1>Collector</h1>
     <p class="lede">Sign in to the monitoring portal.</p>
     {% if error %}
@@ -23,6 +29,16 @@
       </label>
       <button type="submit">Continue</button>
     </form>
+    <label class="flavors compact login-theme">
+      <span class="flavors-label">Theme</span>
+      <span class="select-wrap">
+        <select id="theme-pick" data-theme-select>
+          <option value="dark">Dark</option>
+          <option value="light">Light</option>
+        </select>
+      </span>
+    </label>
   </main>
+  <script src="/static/theme.js"></script>
 </body>
 </html>

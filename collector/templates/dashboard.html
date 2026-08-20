@@ -1,9 +1,15 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Collector</title>
+  <script>
+    (function () {
+      var t = localStorage.getItem("collector-theme");
+      document.documentElement.setAttribute("data-theme", t === "light" ? "light" : "dark");
+    })();
+  </script>
   <link rel="stylesheet" href="/static/app.css">
 </head>
 <body>
@@ -17,6 +23,15 @@
         <span class="pill" id="probe-pill">probe :{{ netflow_port }}</span>
         <span class="pill" id="mt-pill">{{ vendor }} {{ router_host }}:{{ router_port }}</span>
       </div>
+      <label class="flavors compact">
+        <span class="flavors-label">Theme</span>
+        <span class="select-wrap">
+          <select id="theme-pick" data-theme-select>
+            <option value="dark">Dark</option>
+            <option value="light">Light</option>
+          </select>
+        </span>
+      </label>
       <form method="post" action="/logout">
         <button class="ghost" type="submit">Sign out</button>
       </form>
@@ -159,6 +174,7 @@
     <ul class="log" id="events"></ul>
   </section>
 
+  <script src="/static/theme.js"></script>
   <script src="/static/app.js"></script>
 </body>
 </html>
