@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import ipaddress
+import json
 import random
 import secrets
 import time
@@ -365,6 +366,8 @@ async def dashboard(request: Request):
             "vendor": rt.vendor,
             "vendors": VENDORS,
             "vendor_labels": VENDOR_LABELS,
+            "router_profiles": s.router_profiles(),
+            "router_profiles_json": json.dumps(s.router_profiles()),
             "weak_password": s.portal_password in {"changeme", "admin", "password"},
         },
     )

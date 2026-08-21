@@ -6,6 +6,49 @@ let lastOverview = null;
 let formsSyncedOnce = false;
 let lastFlowsKey = "";
 let lastVendorPick = "";
+let routerProfiles = {};
+
+try {
+  const profilesNode = document.getElementById("router-profiles-data");
+  if (profilesNode?.textContent) {
+    routerProfiles = JSON.parse(profilesNode.textContent);
+  }
+} catch {
+  routerProfiles = {};
+}
+
+function getRouterProfile(vendor) {
+  return lastOverview?.router_profiles?.[vendor] || routerProfiles[vendor] || null;
+}
+
+function formatEnvKeys(profile) {
+  return (profile?.env_keys || []).map((k) => `  • ${k}`).join("\n");
+}
+
+function formatMissingVendorMessage(profile) {
+  const label = profile?.label || profile?.vendor || "router";
+  const missing = (profile?.missing || []).length
+    ? profile.missing.map((k) => `  • ${k}`).join("\n")
+    : "  • required .env settings";
+  return (
+    `Cannot switch to ${label} — .env is not configured for that router.\n\n` +
+    `Missing:\n${missing}\n\n` +
+    `Set these in .env and restart the collector:\n${formatEnvKeys(profile)}`
+  );
+}
+
+function vendorSwitchMessage(fromVendor, toVendor, profile) {
+  const labels = { mikrotik: "MikroTik", cisco: "Cisco", juniper: "Juniper" };
+  const from = labels[fromVendor] || fromVendor;
+  const to = profile?.label || labels[toVendor] || toVendor;
+  let msg = `Switch router blocker from ${from} to ${to}?\n\n`;
+  msg += `Uses .env settings for ${to}:\n${formatEnvKeys(profile)}\n\n`;
+  if (profile?.host) {
+    msg += `Current .env target: ${profile.host}:${profile.port}\n\n`;
+  }
+  msg += "Block, unblock, and Test SSH will use the selected router.";
+  return msg;
+}
 
 function panelVisible(id) {
   const el = $(id);
@@ -304,6 +347,9 @@ function renderOverview(data, options = {}) {
 
   if (syncForms) {
     hydrateAllSettingsForms(data);
+  }
+  if (data.router_profiles) {
+    routerProfiles = data.router_profiles;
   }
   updateToolbarControls(data, vendor);
   lastVendorPick = vendor;
@@ -670,45 +716,27 @@ $("vendor-pick").addEventListener("focus", () => {
   }
 });
 
-function vendorSwitchMessage(fromVendor, toVendor, profile) {
-  const labels = { mikrotik: "MikroTik", cisco: "Cisco", juniper: "Juniper" };
-  const from = labels[fromVendor] || fromVendor;
-  const to = profile?.label || labels[toVendor] || toVendor;
-  const envKeys = (profile?.env_keys || []).map((k) => `  • ${k}`).join("\n");
-  let msg = `Switch router blocker from ${from} to ${to}?\n\n`;
-  msg += `Set these in .env for ${to} (then restart the collector):\n${envKeys}\n\n`;
-  if (profile?.host) {
-    msg += `Current .env target: ${profile.host}:${profile.port}\n\n`;
-  }
-  if (!profile?.configured) {
-    const missing = (profile?.missing || []).join(", ") || "required settings";
-    msg += `WARNING: ${to} is not fully configured (${missing}).\n`;
-    msg += `The switch will be rejected until .env is fixed.\n\n`;
-  }
-  msg += "Block, unblock, and Test SSH will use the selected router.";
-  return msg;
-}
-
 $("vendor-pick").addEventListener("change", async (ev) => {
   const vendor = ev.target.value;
-  const previous = lastVendorPick || lastOverview?.vendor || vendor;
+  const previous = lastVendorPick || lastOverview?.vendor || ev.target.value;
   if (!vendor || vendor === previous) return;
 
   ev.target.value = previous;
-  const profile = lastOverview?.router_profiles?.[vendor];
+  const profile = getRouterProfile(vendor);
   if (!profile) {
-    alert("Reload the dashboard and try again.");
-    return;
-  }
-
-  if (!confirm(vendorSwitchMessage(previous, vendor, profile))) {
+    alert(
+      `Cannot switch to ${vendor}: router profile unavailable.\n\n` +
+        "Restart the collector after editing .env, then try again."
+    );
     return;
   }
 
   if (!profile.configured) {
-    alert(
-      `Cannot switch to ${profile.label}: missing ${(profile.missing || []).join(", ")} in .env.\n\nEdit .env and restart the collector.`
-    );
+    alert(formatMissingVendorMessage(profile));
+    return;
+  }
+
+  if (!confirm(vendorSwitchMessage(previous, vendor, profile))) {
     return;
   }
 
