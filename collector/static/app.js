@@ -224,6 +224,35 @@ function isBlocked(ip, blockedSet) {
   return blockedSet.has(ip);
 }
 
+function allowlistFilterTitle(thresholds) {
+  if (!thresholds) {
+    return "Hides flows and detections whose source IP is allowlisted.";
+  }
+  const parts = [];
+  const allow = (thresholds.allowlist || "").trim();
+  if (allow) {
+    parts.push(`LAN / manual allowlist: ${allow}`);
+  }
+  const protectedNets = (thresholds.protected || []).join(", ");
+  if (protectedNets) {
+    parts.push(`Protected WAN: ${protectedNets}`);
+  }
+  const dns = (thresholds.public_dns || []).join(", ");
+  if (dns) {
+    parts.push(`Public DNS resolvers (built-in): ${dns}`);
+  }
+  if (!parts.length) {
+    return "Hides flows and detections whose source IP is allowlisted.";
+  }
+  return `When checked, hides rows whose source IP is in: ${parts.join(" · ")}`;
+}
+
+function updateAllowlistFilterTitle(thresholds) {
+  const label = $("f-hide-allow-label");
+  if (!label) return;
+  label.title = allowlistFilterTitle(thresholds);
+}
+
 function detectionMatchesPort(row, dstPort) {
   if (dstPort == null) return true;
   const d = parseDetail(row);
@@ -366,6 +395,7 @@ function renderOverview(data, options = {}) {
   }
   updateToolbarControls(data, vendor);
   lastVendorPick = vendor;
+  updateAllowlistFilterTitle(data.thresholds);
 
   const detWrap = $("panel-detections")?.querySelector(".table-wrap");
   withScrollPreserved(detWrap, () => {

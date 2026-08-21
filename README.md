@@ -37,7 +37,7 @@ Filters apply to both **Detected scanners** and **Recent sampled flows** without
 | Dst port | Horizontal / connect-storm detections; all flows |
 | Protected dst only | Traffic whose destination is in `PROTECTED_CIDRS` |
 | SYN only | TCP flows with SYN set (`tcp_flags`) |
-| Hide blocked / Hide allowlisted | Both tables (on by default) |
+| Hide blocked / Hide allowlisted | Both tables (hide blocked on by default; hide allowlisted off — hover the label for current CIDRs) |
 
 Use **Protocol → ICMP** to focus on ICMP in the flows table. Use **Kind → ICMP flood** or **Large flow** after those detections fire.
 
