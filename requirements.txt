@@ -6,3 +6,4 @@ pydantic-settings>=2.6.0
 paramiko>=3.5.0
 itsdangerous>=2.2.0
 python-dotenv>=1.0.1
+

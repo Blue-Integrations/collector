@@ -66,7 +66,8 @@ input, button, select {
 }
 input[type="text"],
 input[type="password"],
-input[type="number"] {
+input[type="number"],
+input[type="url"] {
   display: block;
   width: 100%;
   margin-top: 6px;
@@ -297,8 +298,16 @@ button:hover { filter: brightness(1.08); }
   }
 }
 .settings.hidden { display: none; }
-.settings .grow { grid-column: span 1; }
+.settings .grow,
+.settings .allowlist-field {
+  grid-column: 1 / -1;
+}
 .settings label { margin: 0; }
+.allowlist-builtins {
+  grid-column: 1 / -1;
+  margin: -4px 0 0;
+  line-height: 1.45;
+}
 .settings-section-title {
   grid-column: 1 / -1;
   margin: 8px 0 0;
@@ -317,6 +326,15 @@ button:hover { filter: brightness(1.08); }
   justify-content: flex-end;
   padding-top: 4px;
 }
+.webhook-fields {
+  grid-column: 1 / -1;
+  display: grid;
+  gap: 12px;
+}
+.webhook-url {
+  display: block;
+  margin: 0;
+}
 .webhook-url span {
   display: block;
   font-size: 14px;
@@ -327,10 +345,17 @@ button:hover { filter: brightness(1.08); }
   display: block;
   width: 100%;
   margin-top: 0;
+  box-sizing: border-box;
+}
+.webhook-checks {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px 24px;
+  align-items: center;
 }
 .webhook-check {
-  margin: 0 0 4px;
-  align-self: center;
+  margin: 0;
 }
 .webhook-actions {
   grid-column: 1 / -1;

@@ -247,27 +247,32 @@
         <label>Large flow count
           <input type="number" id="s-large-count" min="2" max="100000">
         </label>
-        <label class="grow">Allowlist CIDRs
+        <label class="grow allowlist-field">Allowlist CIDRs
           <input type="text" id="s-allow" placeholder="10.0.0.0/8,192.168.0.0/16">
         </label>
+        <p class="hint allowlist-builtins" id="allowlist-builtins"></p>
 
         <p class="settings-section-title">Webhooks</p>
-        <label class="grow webhook-url">
-          <span>Slack incoming webhook</span>
-          <input type="url" id="w-slack" placeholder="https://hooks.slack.com/services/..." autocomplete="off">
-        </label>
-        <label class="grow webhook-url">
-          <span>Discord webhook</span>
-          <input type="url" id="w-discord" placeholder="https://discord.com/api/webhooks/..." autocomplete="off">
-        </label>
-        <label class="toggle webhook-check">
-          <input type="checkbox" id="w-notify-detections" checked>
-          <span>Notify on detections</span>
-        </label>
-        <label class="toggle webhook-check">
-          <input type="checkbox" id="w-notify-blocks" checked>
-          <span>Notify on blocks</span>
-        </label>
+        <div class="webhook-fields">
+          <label class="webhook-url">
+            <span>Slack incoming webhook</span>
+            <input type="url" id="w-slack" placeholder="https://hooks.slack.com/services/..." autocomplete="off">
+          </label>
+          <label class="webhook-url">
+            <span>Discord webhook</span>
+            <input type="url" id="w-discord" placeholder="https://discord.com/api/webhooks/..." autocomplete="off">
+          </label>
+        </div>
+        <div class="webhook-checks">
+          <label class="toggle webhook-check">
+            <input type="checkbox" id="w-notify-detections" checked>
+            <span>Notify on detections</span>
+          </label>
+          <label class="toggle webhook-check">
+            <input type="checkbox" id="w-notify-blocks" checked>
+            <span>Notify on blocks</span>
+          </label>
+        </div>
         <div class="webhook-actions">
           <button type="button" id="w-test-slack" class="ghost">Test Slack</button>
           <button type="button" id="w-test-discord" class="ghost">Test Discord</button>

@@ -69,6 +69,13 @@ function hydrateSettingsForms(data) {
   $("s-large-bytes").value = data.thresholds.large_flow_min_bytes;
   $("s-large-count").value = data.thresholds.large_flow_threshold;
   $("s-allow").value = data.thresholds.allowlist;
+  const builtins = $("allowlist-builtins");
+  if (builtins) {
+    const dns = (data.thresholds.public_dns || []).join(", ");
+    builtins.textContent = dns
+      ? `Built-in public DNS resolvers (always allowlisted): ${dns}`
+      : "";
+  }
 }
 
 function hydrateWebhookForms(data) {
@@ -205,8 +212,12 @@ function filterState() {
   };
 }
 
-function isAllowlisted(ip, allowNets, protectedNets) {
-  return ipInAnyCidr(ip, allowNets) || ipInAnyCidr(ip, protectedNets);
+function isAllowlisted(ip, allowNets, protectedNets, publicDns) {
+  return (
+    ipInAnyCidr(ip, allowNets)
+    || ipInAnyCidr(ip, protectedNets)
+    || ipInAnyCidr(ip, publicDns)
+  );
 }
 
 function isBlocked(ip, blockedSet) {
@@ -234,9 +245,10 @@ function applyDetectionFilters(rows, data, state) {
   const blocked = new Set(data.blocked_ips || []);
   const allowNets = buildAllowNets(data.thresholds?.allowlist);
   const protectedNets = data.thresholds?.protected || [];
+  const publicDns = data.thresholds?.public_dns || [];
   return rows.filter((row) => {
     if (state.hideBlocked && isBlocked(row.src_ip, blocked)) return false;
-    if (state.hideAllowlisted && isAllowlisted(row.src_ip, allowNets, protectedNets)) {
+    if (state.hideAllowlisted && isAllowlisted(row.src_ip, allowNets, protectedNets, publicDns)) {
       return false;
     }
     if (state.kind && row.kind !== state.kind) return false;
@@ -253,9 +265,10 @@ function applyFlowFilters(rows, data, state) {
   const blocked = new Set(data.blocked_ips || []);
   const allowNets = buildAllowNets(data.thresholds?.allowlist);
   const protectedNets = data.thresholds?.protected || [];
+  const publicDns = data.thresholds?.public_dns || [];
   return rows.filter((row) => {
     if (state.hideBlocked && isBlocked(row.src_ip, blocked)) return false;
-    if (state.hideAllowlisted && isAllowlisted(row.src_ip, allowNets, protectedNets)) {
+    if (state.hideAllowlisted && isAllowlisted(row.src_ip, allowNets, protectedNets, publicDns)) {
       return false;
     }
     if (state.proto && String(row.proto) !== state.proto) return false;
