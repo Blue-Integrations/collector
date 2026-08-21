@@ -127,6 +127,13 @@ class Runtime:
         chosen = normalize_vendor(vendor)
         if chosen not in VENDORS:
             raise HTTPException(status_code=400, detail="vendor must be mikrotik, cisco, or juniper")
+        profile = self.settings.vendor_profile(chosen)
+        if not profile["configured"]:
+            missing = ", ".join(profile["missing"]) or "required .env settings"
+            raise HTTPException(
+                status_code=400,
+                detail=f"{profile['label']} is not configured in .env ({missing}). Edit .env and restart the collector.",
+            )
         self.db.set_kv("blocker_vendor", chosen)
         if self.vendor != chosen:
             self.blocker.close()
@@ -375,6 +382,7 @@ async def api_overview(request: Request, _: None = Depends(require_login)):
         "router": rt.mikrotik_status,
         "vendor": rt.vendor,
         "vendors": [{"id": key, "label": VENDOR_LABELS[key]} for key in VENDORS],
+        "router_profiles": rt.settings.router_profiles(),
         "auto_block": rt.auto_block,
         "thresholds": {
             "scan_window_sec": rt.detector.window_sec,

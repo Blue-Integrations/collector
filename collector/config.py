@@ -91,6 +91,85 @@ class Settings(BaseSettings):
             return self.juniper_host, self.juniper_port, self.juniper_prefix_list
         return self.mikrotik_host, self.mikrotik_port, self.mikrotik_address_list
 
+    def vendor_profile(self, vendor: str) -> dict[str, object]:
+        vendor = vendor.strip().lower()
+        if vendor == "cisco":
+            host, port, acl = self.cisco_host, self.cisco_port, self.cisco_object_group
+            auth_ok = bool(self.cisco_password or self.cisco_key_path)
+            missing: list[str] = []
+            if not host:
+                missing.append("CISCO_HOST")
+            if not auth_ok:
+                missing.append("CISCO_PASSWORD or CISCO_KEY_PATH")
+            return {
+                "vendor": "cisco",
+                "label": "Cisco",
+                "host": host,
+                "port": port,
+                "access_list": acl,
+                "configured": bool(host and auth_ok),
+                "env_keys": [
+                    "CISCO_HOST",
+                    "CISCO_PORT",
+                    "CISCO_USER",
+                    "CISCO_PASSWORD or CISCO_KEY_PATH",
+                    "CISCO_ENABLE_PASSWORD (optional)",
+                    "CISCO_ACL",
+                    "CISCO_OBJECT_GROUP",
+                ],
+                "missing": missing,
+            }
+        if vendor == "juniper":
+            host, port, acl = self.juniper_host, self.juniper_port, self.juniper_prefix_list
+            auth_ok = bool(self.juniper_password or self.juniper_key_path)
+            missing = []
+            if not host:
+                missing.append("JUNIPER_HOST")
+            if not auth_ok:
+                missing.append("JUNIPER_PASSWORD or JUNIPER_KEY_PATH")
+            return {
+                "vendor": "juniper",
+                "label": "Juniper",
+                "host": host,
+                "port": port,
+                "access_list": acl,
+                "configured": bool(host and auth_ok),
+                "env_keys": [
+                    "JUNIPER_HOST",
+                    "JUNIPER_PORT",
+                    "JUNIPER_USER",
+                    "JUNIPER_PASSWORD or JUNIPER_KEY_PATH",
+                    "JUNIPER_PREFIX_LIST",
+                    "JUNIPER_FILTER",
+                ],
+                "missing": missing,
+            }
+        host, port, acl = self.mikrotik_host, self.mikrotik_port, self.mikrotik_address_list
+        auth_ok = bool(self.mikrotik_password or self.mikrotik_key_path)
+        missing = []
+        if not auth_ok:
+            missing.append("MIKROTIK_PASSWORD or MIKROTIK_KEY_PATH")
+        return {
+            "vendor": "mikrotik",
+            "label": "MikroTik",
+            "host": host,
+            "port": port,
+            "access_list": acl,
+            "configured": auth_ok,
+            "env_keys": [
+                "MIKROTIK_HOST",
+                "MIKROTIK_PORT",
+                "MIKROTIK_USER",
+                "MIKROTIK_PASSWORD or MIKROTIK_KEY_PATH",
+                "MIKROTIK_ADDRESS_LIST",
+                "MIKROTIK_BLOCK_TIMEOUT",
+            ],
+            "missing": missing,
+        }
+
+    def router_profiles(self) -> dict[str, dict[str, object]]:
+        return {vendor: self.vendor_profile(vendor) for vendor in ("mikrotik", "cisco", "juniper")}
+
 
 @lru_cache
 def get_settings() -> Settings:

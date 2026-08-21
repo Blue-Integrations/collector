@@ -5,6 +5,7 @@ const PROTOS = { 1: "ICMP", 6: "TCP", 17: "UDP", 47: "GRE", 58: "ICMPv6" };
 let lastOverview = null;
 let formsSyncedOnce = false;
 let lastFlowsKey = "";
+let lastVendorPick = "";
 
 function panelVisible(id) {
   const el = $(id);
@@ -305,6 +306,7 @@ function renderOverview(data, options = {}) {
     hydrateAllSettingsForms(data);
   }
   updateToolbarControls(data, vendor);
+  lastVendorPick = vendor;
 
   const detWrap = $("panel-detections")?.querySelector(".table-wrap");
   withScrollPreserved(detWrap, () => {
@@ -660,17 +662,67 @@ $("btn-test").addEventListener("click", async () => {
   }
 });
 
+$("vendor-pick").addEventListener("focus", () => {
+  if (lastOverview?.vendor) {
+    lastVendorPick = lastOverview.vendor;
+  } else {
+    lastVendorPick = $("vendor-pick").value;
+  }
+});
+
+function vendorSwitchMessage(fromVendor, toVendor, profile) {
+  const labels = { mikrotik: "MikroTik", cisco: "Cisco", juniper: "Juniper" };
+  const from = labels[fromVendor] || fromVendor;
+  const to = profile?.label || labels[toVendor] || toVendor;
+  const envKeys = (profile?.env_keys || []).map((k) => `  • ${k}`).join("\n");
+  let msg = `Switch router blocker from ${from} to ${to}?\n\n`;
+  msg += `Set these in .env for ${to} (then restart the collector):\n${envKeys}\n\n`;
+  if (profile?.host) {
+    msg += `Current .env target: ${profile.host}:${profile.port}\n\n`;
+  }
+  if (!profile?.configured) {
+    const missing = (profile?.missing || []).join(", ") || "required settings";
+    msg += `WARNING: ${to} is not fully configured (${missing}).\n`;
+    msg += `The switch will be rejected until .env is fixed.\n\n`;
+  }
+  msg += "Block, unblock, and Test SSH will use the selected router.";
+  return msg;
+}
+
 $("vendor-pick").addEventListener("change", async (ev) => {
   const vendor = ev.target.value;
-  if (!vendor) return;
+  const previous = lastVendorPick || lastOverview?.vendor || vendor;
+  if (!vendor || vendor === previous) return;
+
+  ev.target.value = previous;
+  const profile = lastOverview?.router_profiles?.[vendor];
+  if (!profile) {
+    alert("Reload the dashboard and try again.");
+    return;
+  }
+
+  if (!confirm(vendorSwitchMessage(previous, vendor, profile))) {
+    return;
+  }
+
+  if (!profile.configured) {
+    alert(
+      `Cannot switch to ${profile.label}: missing ${(profile.missing || []).join(", ")} in .env.\n\nEdit .env and restart the collector.`
+    );
+    return;
+  }
+
+  ev.target.value = vendor;
   try {
     await api("/api/settings", {
       method: "POST",
       body: JSON.stringify({ blocker_vendor: vendor }),
     });
+    lastVendorPick = vendor;
     await refresh();
   } catch (err) {
     alert(err.message);
+    ev.target.value = previous;
     await refresh();
   }
 });
