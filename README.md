@@ -223,7 +223,7 @@ python3 -m collector upgrade --restart "systemctl restart collector"
 Example check output:
 
 ```
-version: 0.1.0
+version: 0.1.1
 root:    /opt/collector
 git:     main @ f54e109
 remote:  origin

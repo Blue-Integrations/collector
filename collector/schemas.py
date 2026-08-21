@@ -4,6 +4,8 @@ from typing import Literal
 
 from pydantic import BaseModel
 
+from collector import __version__
+
 
 class Health(BaseModel):
     ok: bool
@@ -11,7 +13,7 @@ class Health(BaseModel):
     flows: int
     flows_last_10s: int = 0
     flows_per_sec: float = 0
-    version: str = "0.1.0"
+    version: str = __version__
     vendor: str = "mikrotik"
     router: bool | None = None
     mikrotik: bool | None = None

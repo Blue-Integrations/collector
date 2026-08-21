@@ -5,9 +5,9 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from collector import __version__
+from collector.version import installed_version, project_root
 
-ROOT = Path(__file__).resolve().parent.parent
+__all__ = ["installed_version", "project_root", "UpgradeError", "UpgradeStatus", "UpgradeResult", "check_upgrade", "run_upgrade", "is_git_checkout"]
 
 
 class UpgradeError(Exception):
@@ -17,7 +17,7 @@ class UpgradeError(Exception):
 @dataclass
 class UpgradeStatus:
     ok: bool = True
-    installed_version: str = __version__
+    installed_version: str = ""
     project_root: str = ""
     git: bool = False
     branch: str = ""
@@ -40,19 +40,6 @@ class UpgradeResult:
     restarted: bool = False
     message: str = ""
     log: list[str] = field(default_factory=list)
-
-
-def project_root() -> Path:
-    return ROOT
-
-
-def installed_version() -> str:
-    try:
-        from importlib.metadata import version
-
-        return version("netflow-collector")
-    except Exception:
-        return __version__
 
 
 def is_git_checkout(root: Path | None = None) -> bool:

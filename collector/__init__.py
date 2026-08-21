@@ -1,3 +1,5 @@
 """NetFlow collector, scanner detector, and SSH router blocker."""
 
-__version__ = "0.1.0"
+from collector.version import installed_version
+
+__version__ = installed_version()
