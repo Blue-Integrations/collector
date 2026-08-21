@@ -124,6 +124,49 @@ If **`dropped` stays at 0** and scans look sane, export bandwidth is not your bo
 
 NetFlow export is **bursty** (exporter cache timeouts, often 15–30s on MikroTik). The dashboard polls every 2 seconds, so **Records (10s)** can jump in steps rather than ticking smoothly — that is normal.
 
+### Export sizing by line rate
+
+Size for **flow record rate** (what the collector ingests), not monitored Gbps. This process is comfortable around **500–3,000 records/s** on one edge exporter; the internal queue holds **20,000** records before `dropped` increments.
+
+Scaled from the 1 Gbps example above (~**10–50 Mbps** aggressive export, **~1–5 Mbps** with sane cache/sampling):
+
+| Monitored line (busy) | Aggressive export (unsampled / 1:1-ish) | Recommended export (cache + sampling) |
+| --- | --- | --- |
+| **1 Gbps** | ~10–50 Mbps UDP | ~1–5 Mbps |
+| **10 Gbps** | ~100–500 Mbps (will overwhelm this collector) | ~5–25 Mbps |
+| **25 Gbps** | ~250 Mbps–1.2 Gbps | ~10–50 Mbps |
+| **100 Gbps** | multi-Gbps | ~25–100 Mbps (often needs a dedicated collector) |
+
+Rough **Records (10s)** on the dashboard (same traffic mix, order-of-magnitude):
+
+| Line | Aggressive | Recommended |
+| --- | --- | --- |
+| **1 G** | 5k–50k+ (bursty) | **500–5,000** |
+| **10 G** | 50k+ / `dropped` | **2,000–8,000** |
+| **25 G** | `dropped` | **3,000–12,000** |
+| **100 G** | `dropped` | **5,000–20,000** (at ceiling — sample harder) |
+
+If **`dropped` > 0**, increase sampling, export fewer interfaces, or shorten inactive timeouts. Scanner detection degrades as sampling gets coarser — balance export volume vs visibility.
+
+### Shared export rules (all vendors)
+
+1. Export **WAN / internet-facing interfaces only** — not every VLAN on a core.
+2. **Active flow timeout ≈ 30s** — aligns with default `SCAN_WINDOW_SEC=30`.
+3. **Inactive timeout ≈ 15s** — closes idle flows without filling cache.
+4. Include **TCP flags** in the template where the platform allows (portal **SYN only** filter).
+5. **Higher line rate → more sampling** (Cisco/Juniper); MikroTik has no packet sampler — use interface scope and cache size.
+
+### Quick pick by tier
+
+| Tier | Strategy |
+| --- | --- |
+| **1 G** | MikroTik WAN-only, 30s/15s, 16k cache — usually no sampling |
+| **10 G** | Cisco/Juniper **1:1024–4096** on WAN ingress, 30s active cache |
+| **25 G** | **1:4096–16384**, watch `dropped`, consider a beefier collector VM |
+| **100 G** | **1:16384+**, multiple collectors or commercial flow analytics; this app targets **edge 1–10G** |
+
+Vendor-specific examples: [MikroTik](#mikrotik-export-netflow), [Cisco](#cisco-export-netflow), [Juniper](#juniper-export-j-flow--ipfix).
+
 ## Upgrade
 
 The collector can update itself from a git checkout (`git pull --ff-only` + `pip install -e .`). Manual installs without git are supported too.
@@ -251,26 +294,53 @@ Manual installs without git: copy the new tree over the install directory, then 
 
 ## MikroTik: export NetFlow
 
-Point **traffic-flow** at the collector, not at the router itself.
+Point **traffic-flow** at the collector, not at the router itself. RouterOS has **no packet sampler** — control export volume with **which interfaces** you export, **cache size**, and **timeouts**.
+
+### 1 Gbps edge (typical)
+
+Export **one WAN interface** (not `interfaces=all` on a busy box):
 
 ```
 /ip traffic-flow
-set enabled=yes interfaces=all cache-entries=16k active-flow-timeout=30s inactive-flow-timeout=15s
+set enabled=yes interfaces=<WAN_IF> cache-entries=16384 \
+    active-flow-timeout=30s inactive-flow-timeout=15s
 /ip traffic-flow target
 add dst-address=<COLLECTOR_IP> port=2055 version=9
 ```
 
+Expected: **Records (10s)** ~500–3,000; export **~1–5 Mbps** UDP.
+
 RouterOS 7 also accepts IPFIX (`version=ipfix`). The probe understands v5, v9, and IPFIX.
 
-UDP 2055 must be reachable from the router to the collector. If the collector is on the LAN, no extra NAT is required.
+### By line rate
+
+| Line | `cache-entries` | Interfaces | Notes |
+| --- | --- | --- | --- |
+| **1 G** | 16k | WAN only | Sweet spot for this collector |
+| **10 G** | 32k | WAN only | If **Records (10s)** > ~8k, narrow interfaces or shorten inactive timeout |
+| **25 G** | 32k–64k | WAN only | Consider upstream sampling on a core switch/router |
+| **100 G** | — | Do not rely on MikroTik alone | Use a sampled exporter on core hardware |
+
+UDP **2055** must be reachable from the router to the collector. If the collector is on the LAN, no extra NAT is required.
 
 ## Cisco: export NetFlow
 
-The probe accepts **v5, v9, and IPFIX**. Prefer **v9** (or IPFIX on IOS-XE). Send UDP **2055** to `<COLLECTOR_IP>`. Sampling is optional; unsampled is better for scanner detection.
+The probe accepts **v5, v9, and IPFIX**. Prefer **v9** (or IPFIX on IOS-XE). Send UDP **2055** to `<COLLECTOR_IP>`.
 
 Cisco export is ingest-only until you set `CISCO_*` in `.env` and select **Cisco** on the dashboard. Then auto-block SSHs that box and maintains an object-group + ACL.
 
-### IOS / IOS-XE — Flexible NetFlow (v9)
+### Sampling by line rate
+
+| Line | Sampler `1 out-of N` | Typical export UDP |
+| --- | --- | --- |
+| **1 G** | none (optional 128) | ~1–5 Mbps |
+| **10 G** | **1024–4096** | ~5–20 Mbps |
+| **25 G** | **4096–16384** | ~10–40 Mbps |
+| **100 G** | **16384–65536** | ~25–100 Mbps |
+
+Apply the monitor on **WAN ingress** (and egress if you need reply-leg visibility). Unsampled is best for scanner detection on a **1 G** edge; add a sampler from **10 G** up.
+
+### IOS / IOS-XE — Flexible NetFlow (v9), 1 Gbps
 
 ```
 flow record COLLECTOR-REC
@@ -301,6 +371,24 @@ interface GigabitEthernet0/0
  ip flow monitor COLLECTOR-MON output
 ```
 
+### IOS / IOS-XE — 10 Gbps+ with sampler
+
+```
+sampler COLLECTOR-SAMP mode random 1 out-of 4096
+!
+flow monitor COLLECTOR-MON
+ record COLLECTOR-REC
+ exporter COLLECTOR-EXP
+ cache timeout active 30
+ cache timeout inactive 15
+ sampler COLLECTOR-SAMP
+!
+interface TenGigabitEthernet0/0/0
+ ip flow monitor COLLECTOR-MON input
+```
+
+Raise `out-of` toward **16384** on **25 G** and **65536** on **100 G** if **Records (10s)** or `dropped` climb.
+
 IPv6: duplicate the record with `ipv6` matches, or add a second monitor.
 
 ### Older IOS — original NetFlow (v5)
@@ -318,18 +406,29 @@ NX-OS uses `feature netflow` plus `flow exporter` / `flow monitor` — same idea
 
 ## Juniper: export J-Flow / IPFIX
 
-Junos calls this **J-Flow** (v5/v9) or **IPFIX**. Prefer **v9 or IPFIX**. Sampling is the usual MX/SRX pattern.
+Junos calls this **J-Flow** (v5/v9) or **IPFIX**. Prefer **v9 or IPFIX**. **`input { rate N; }`** means sample **1 in N packets** for new flow keys.
 
 Templates must include IPv4/IPv6 addresses, L4 ports, protocol, and byte/packet counters — that is what the detector reads.
 
-### MX / PTX — sampling to IPFIX
+### Sampling `rate` by line rate
+
+| Line | `input rate` (1:N) | Notes |
+| --- | --- | --- |
+| **1 G** | **100–500** (or `rate 1` on quiet SRX edges) | `rate 1` = heaviest export |
+| **10 G** | **1000–4096** | WAN sampling only |
+| **25 G** | **4096–16384** | |
+| **100 G** | **16384–100000** | Often PFE sampling + dedicated collector |
+
+Apply `sampling { input; output; }` on **WAN interface units** only.
+
+### MX / PTX — 1 Gbps example (IPFIX)
 
 ```
 forwarding-options {
     sampling {
         instance COLLECTOR {
             input {
-                rate 1;
+                rate 100;
             }
             family inet {
                 output {
@@ -363,7 +462,7 @@ interfaces {
 }
 ```
 
-For NetFlow v9 instead of IPFIX, use `version9 { template { ipv4; } }` on `flow-server` where the platform supports it. `rate 1` is every packet; raise the rate if the RE/PFE cannot keep up (scanner detection gets worse as sampling increases).
+For NetFlow v9 instead of IPFIX, use `version9 { template { ipv4; } }` on `flow-server` where the platform supports it. Raise `rate` (coarser sampling) as line rate increases — see table above.
 
 ### SRX
 
