@@ -297,6 +297,16 @@ button:hover { filter: brightness(1.08); }
 .muted { color: var(--muted); margin: 4px 0 12px; font-size: 14px; }
 
 .table-wrap { overflow-x: auto; }
+.split .table-wrap {
+  max-height: min(480px, 55vh);
+  overflow: auto;
+}
+.split .table-wrap thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--bg-2);
+}
 table {
   width: 100%;
   border-collapse: collapse;
