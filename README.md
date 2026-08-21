@@ -11,7 +11,7 @@ Exporter (MikroTik / Cisco / Juniper)
         └── SSH block/unblock → chosen router
 ```
 
-Default policy is **detect only**. Auto-block stays off until you enable it in the portal or set `AUTO_BLOCK=true`. The LAN allowlist (`192.168.88.0/24` by default) is never auto-blocked. Public DNS anycast (Cloudflare `1.1.1.1`, Google `8.8.8.8`, Quad9, OpenDNS) is always ignored, as are DNS/DoT **reply** legs (`src_port` 53/853) so NetFlow's reverse flows are not scored as scans.
+Default policy is **detect only**. Auto-block stays off until you enable it in the portal or set `AUTO_BLOCK=true`. CIDRs in `ALLOWLIST` (LAN and management) are never auto-blocked. Public DNS anycast (Cloudflare `1.1.1.1`, Google `8.8.8.8`, Quad9, OpenDNS) is always ignored, as are DNS/DoT **reply** legs (`src_port` 53/853) so NetFlow's reverse flows are not scored as scans.
 
 ## Run it
 
@@ -312,13 +312,13 @@ Allow UDP/2055 from the exporter to the collector on any intermediate firewall.
 
 ## MikroTik: SSH blocking
 
-The portal logs into `192.168.88.3` port `22232` (overridable in `.env`) and:
+The portal logs into the router over SSH (host and port from `.env`) and:
 
 1. Adds/removes IPs on address-list `blocked-scanners` (timeout `1d` by default)
 2. Ensures one IPv4 `chain=forward` drop for that list (added once; not reordered later)
 3. Removes tracked connections from a newly blocked IP so existing TCP sessions die immediately
 
-IPv6 filter is not managed. Packets only evaluate rules for their chain, so extra `input` / `forward-in` drops never see forwarded WAN traffic. Bridged L2 (same VLAN on `bridge-gig`, `use-ip-firewall=no`) never hits IP filter at all.
+IPv6 filter is not managed. Packets only evaluate rules for their chain, so extra `input` / `forward-in` drops never see forwarded WAN traffic. Bridged L2 with `use-ip-firewall=no` can bypass IP filter on hairpinned VLAN traffic — not the usual routed WAN ingress path.
 
 Create a dedicated user if you do not want to use `admin`:
 
@@ -327,18 +327,17 @@ Create a dedicated user if you do not want to use `admin`:
 /user add name=collector group=collector password="choose-a-strong-password"
 ```
 
-Confirm SSH is on 22232:
+Confirm SSH is reachable on the port you configure:
 
 ```
-/ip service set ssh port=22232
 /ip service print where name=ssh
 ```
 
 Fill `.env`:
 
 ```
-MIKROTIK_HOST=192.168.88.3
-MIKROTIK_PORT=22232
+MIKROTIK_HOST=<ROUTER_IP>
+MIKROTIK_PORT=22
 MIKROTIK_USER=collector
 MIKROTIK_PASSWORD=...
 ```
@@ -408,7 +407,7 @@ Inside a sliding window (default 30s) a source is flagged when it does any of:
 | Spray | ≥ 80 unique destination ports overall |
 | Connect-storm | ≥ 40 source ports against one host:service (HTTPS floods) |
 
-Reply legs from well-known service ports (443, 80, 22, 53, …) to ephemeral client ports are ignored so NetFlow reverse flows do not look like scans from your own servers. `PROTECTED_CIDRS` (default `151.244.12.0/27`) is never auto-blocked.
+Reply legs from well-known service ports (443, 80, 22, 53, …) to ephemeral client ports are ignored so NetFlow reverse flows do not look like scans from your own servers. Prefixes in `PROTECTED_CIDRS` (your WAN and hosted services) are never auto-blocked.
 
 Thresholds and the allowlist are editable on the portal (Thresholds) and persist in SQLite (`data/collector.db`). Public DNS resolvers and protected WAN prefixes stay allowlisted even if you edit that field.
 
@@ -442,14 +441,14 @@ curl -sS -H "X-API-Key: $SECRET_KEY" 'http://<collector-ip>:8080/api/dump/talker
 
 Also accepted: `Authorization: Bearer <SECRET_KEY>` or `?key=<SECRET_KEY>`.
 
-OpenAPI: [http://192.168.88.20:8080/docs](http://192.168.88.20:8080/docs) — Authorize with `X-API-Key`. CORS preflight (`OPTIONS`) is enabled for GET dumps.
+OpenAPI: `http://<collector-ip>:8080/docs` — Authorize with `X-API-Key`. CORS preflight (`OPTIONS`) is enabled for GET dumps.
 
 Drop-in FastAPI client for another app: `examples/fastapi_client.py`
 
 ```python
 from examples.fastapi_client import router
 app.include_router(router)
-# COLLECTOR_URL=http://192.168.88.20:8080
+# COLLECTOR_URL=http://<collector-ip>:8080
 # COLLECTOR_API_KEY=<SECRET_KEY>
 ```
 
