@@ -357,6 +357,83 @@ table.dense td { padding-top: 6px; padding-bottom: 6px; }
 
 .flash.error { color: var(--bad); }
 
+.modal {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(0, 0, 0, 0.55);
+}
+.modal.hidden { display: none; }
+.modal-card {
+  width: min(480px, 100%);
+  max-height: min(80vh, 560px);
+  overflow: auto;
+  background: var(--bg-2);
+  border: 1px solid var(--line);
+  padding: 18px 20px 16px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.35);
+}
+.modal-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+.modal-head h2 {
+  margin: 0;
+  font-size: 18px;
+}
+.modal-close {
+  font-size: 22px;
+  line-height: 1;
+  padding: 4px 10px;
+}
+.whois-ip {
+  font-family: var(--mono);
+  font-size: 14px;
+  margin: 0 0 12px;
+  color: var(--accent);
+}
+.whois-dl {
+  margin: 0;
+  display: grid;
+  grid-template-columns: 7em 1fr;
+  gap: 6px 12px;
+  font-size: 13px;
+}
+.whois-dl dt {
+  margin: 0;
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.whois-dl dd {
+  margin: 0;
+  font-family: var(--mono);
+  word-break: break-word;
+}
+.ip-whois {
+  background: none;
+  border: 0;
+  padding: 0;
+  color: var(--accent);
+  font-family: var(--mono);
+  font-size: 13px;
+  cursor: pointer;
+  text-decoration: underline;
+  text-decoration-color: transparent;
+}
+.ip-whois:hover,
+.ip-whois:focus-visible {
+  text-decoration-color: var(--accent);
+}
+
 .login-theme {
   margin: 20px 0 0;
 }

@@ -70,7 +70,7 @@ function renderOverview(data) {
     : `${vendorLabel} down · ${mt.host}:${mt.port}`;
   mtPill.className = "pill" + (mt.connected ? " ok" : " bad");
   $("mt-hint").textContent = mt.last_error || (mt.filter_ready ? "drop rules present" : "");
-  $("list-name").textContent = mt.address_list || "blocked-scanners";
+  $("list-name").textContent = `${mt.address_list || "blocked-scanners"} · click or Alt+click an IP for WHOIS`;
   $("list-heading").textContent = `${vendorLabel} access list`;
   $("auto-block-label").textContent = `Auto-block on ${vendorLabel}`;
   $("vendor-pick").value = vendor;
@@ -108,7 +108,7 @@ function renderOverview(data) {
     for (const row of data.blocks) {
       const tr = document.createElement("tr");
       tr.innerHTML = `
-        <td>${row.ip}</td>
+        <td><button type="button" class="ip-whois" data-whois="${row.ip}" title="WHOIS (Alt+click)">${row.ip}</button></td>
         <td>${row.source}</td>
         <td>${row.reason}</td>
         <td>${age(row.created_at, data.now)}</td>
@@ -150,6 +150,62 @@ async function refresh() {
   }
 }
 
+const WHOIS_FIELDS = [
+  ["network", "Network"],
+  ["cidr", "Range"],
+  ["country", "Country"],
+  ["org", "Organization"],
+  ["abuse", "Abuse contact"],
+  ["rir", "RIR"],
+  ["handle", "Handle"],
+];
+
+function showWhoisModal(ip, data, hint) {
+  $("whois-title").textContent = "WHOIS / RDAP";
+  $("whois-ip").textContent = ip;
+  $("whois-hint").textContent = hint || "";
+  const body = $("whois-body");
+  body.innerHTML = "";
+  let any = false;
+  for (const [key, label] of WHOIS_FIELDS) {
+    const val = data[key];
+    if (!val) continue;
+    any = true;
+    const dt = document.createElement("dt");
+    dt.textContent = label;
+    const dd = document.createElement("dd");
+    dd.textContent = val;
+    body.appendChild(dt);
+    body.appendChild(dd);
+  }
+  if (!any) {
+    const dd = document.createElement("dd");
+    dd.className = "empty";
+    dd.textContent = "No RDAP fields returned.";
+    body.appendChild(dd);
+  }
+  $("whois-modal").classList.remove("hidden");
+  $("whois-modal").setAttribute("aria-hidden", "false");
+}
+
+function hideWhoisModal() {
+  $("whois-modal").classList.add("hidden");
+  $("whois-modal").setAttribute("aria-hidden", "true");
+}
+
+async function openWhois(ip) {
+  $("whois-hint").textContent = "Looking up…";
+  $("whois-modal").classList.remove("hidden");
+  $("whois-ip").textContent = ip;
+  $("whois-body").innerHTML = "";
+  try {
+    const data = await api(`/api/whois/${encodeURIComponent(ip)}`);
+    showWhoisModal(ip, data, "Source: RDAP (rdap.org)");
+  } catch (err) {
+    showWhoisModal(ip, {}, err.message);
+  }
+}
+
 $("detections").addEventListener("click", async (ev) => {
   const ip = ev.target.getAttribute("data-block");
   if (!ip) return;
@@ -163,6 +219,12 @@ $("detections").addEventListener("click", async (ev) => {
 });
 
 $("blocks").addEventListener("click", async (ev) => {
+  const whoisIp = ev.target.getAttribute("data-whois");
+  if (whoisIp) {
+    ev.preventDefault();
+    await openWhois(whoisIp);
+    return;
+  }
   const ip = ev.target.getAttribute("data-unblock");
   if (!ip) return;
   ev.target.disabled = true;
@@ -172,6 +234,14 @@ $("blocks").addEventListener("click", async (ev) => {
   } catch (err) {
     alert(err.message);
   }
+});
+
+$("whois-close").addEventListener("click", hideWhoisModal);
+$("whois-modal").addEventListener("click", (ev) => {
+  if (ev.target.id === "whois-modal") hideWhoisModal();
+});
+document.addEventListener("keydown", (ev) => {
+  if (ev.key === "Escape") hideWhoisModal();
 });
 
 $("manual-block").addEventListener("submit", async (ev) => {

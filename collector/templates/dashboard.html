@@ -132,7 +132,7 @@
     <section class="panel">
       <header>
         <h2 id="list-heading">Router access list</h2>
-        <p class="muted" id="list-name">blocked-scanners</p>
+        <p class="muted" id="list-name">blocked-scanners · click or Alt+click an IP for WHOIS</p>
       </header>
       <form id="manual-block" class="inline">
         <input type="text" id="manual-ip" placeholder="Block IPv4 / IPv6" required>
@@ -181,6 +181,18 @@
     </header>
     <ul class="log" id="events"></ul>
   </section>
+
+  <div id="whois-modal" class="modal hidden" aria-hidden="true">
+    <div class="modal-card" role="dialog" aria-labelledby="whois-title">
+      <header class="modal-head">
+        <h2 id="whois-title">WHOIS</h2>
+        <button type="button" class="ghost modal-close" id="whois-close" aria-label="Close">×</button>
+      </header>
+      <p class="whois-ip" id="whois-ip"></p>
+      <dl class="whois-dl" id="whois-body"></dl>
+      <p class="hint" id="whois-hint"></p>
+    </div>
+  </div>
 
   <script src="/static/theme.js"></script>
   <script src="/static/app.js"></script>

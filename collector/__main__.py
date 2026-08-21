@@ -97,9 +97,21 @@ def main() -> None:
         help="shell command to run after upgrade (default: UPGRADE_RESTART_CMD from .env)",
     )
 
+    parser.set_defaults(
+        command="serve",
+        host=None,
+        port=None,
+        demo=False,
+        check=False,
+        no_fetch=False,
+        no_git=False,
+        no_install=False,
+        remote="",
+        branch="",
+        restart="",
+    )
     args = parser.parse_args()
-    command = args.command or "serve"
-    if command == "upgrade":
+    if args.command == "upgrade":
         _upgrade(args)
     else:
         _serve(args)

@@ -26,6 +26,8 @@ from collector.netflow import Flow, NetflowParser, proto_name
 from collector.probe import ProbeStats, start_probe
 from collector.schemas import BlockedDump, FullDump, Health, TalkersDump
 from collector.upgrade import UpgradeError, check_upgrade, installed_version, run_upgrade
+from collector.whois import WhoisError, lookup_ip
+from collector.talkers import TalkerTracker
 
 STATIC = Path(__file__).parent / "static"
 TEMPLATES = Path(__file__).parent / "templates"
@@ -352,6 +354,26 @@ async def api_unblock(request: Request, _: None = Depends(require_login)):
     rt.router_blocked.discard(ip)
     rt.db.log(f"unblocked {ip}")
     return {"ok": True, "ip": ip}
+
+
+@app.get("/api/whois/{ip}")
+async def api_whois(ip: str, request: Request, _: None = Depends(require_login)):
+    _validate_ip(ip)
+    try:
+        record = await asyncio.to_thread(lookup_ip, ip)
+    except WhoisError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return {
+        "ip": record.ip,
+        "network": record.network,
+        "cidr": record.cidr,
+        "country": record.country,
+        "org": record.org,
+        "abuse": record.abuse,
+        "rir": record.rir,
+        "handle": record.raw_handle,
+        "fetched_at": record.fetched_at,
+    }
 
 
 @app.post("/api/settings")
