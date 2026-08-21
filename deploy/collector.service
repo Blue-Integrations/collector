@@ -1,15 +1,26 @@
 [Unit]
-Description=NetFlow collector portal
+Description=NetFlow collector portal and probe
+Documentation=file://@INSTALL_ROOT@/README.md
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
-WorkingDirectory=/opt/collector
-EnvironmentFile=/opt/collector/.env
-ExecStart=/opt/collector/.venv/bin/python -m collector
+User=@RUN_USER@
+Group=@RUN_GROUP@
+WorkingDirectory=@INSTALL_ROOT@
+EnvironmentFile=@INSTALL_ROOT@/.env
+ExecStart=@INSTALL_ROOT@/.venv/bin/python -m collector
 Restart=on-failure
-RestartSec=3
+RestartSec=5
+TimeoutStopSec=30
+
+# NetFlow can burst; default 1024 is tight on busy exporters.
+LimitNOFILE=65536
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=collector
 
 [Install]
 WantedBy=multi-user.target

@@ -15,23 +15,28 @@ Default policy is **detect only**. Auto-block stays off until you enable it in t
 
 ## Run it
 
+### First install
+
 ```bash
-cd /root/collector
+cd /path/to/collector
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -e .
 cp .env.example .env
 # edit .env — portal password, then SSH for the router you will block on
-python -m collector
 ```
 
-Open `http://<collector-ip>:8080` and sign in (`admin` / `changeme` until you change it).
+### Start
 
-To exercise the UI without live exports:
+From the install directory:
 
 ```bash
-python -m collector --demo
+./startcollector.sh
 ```
+
+The script loads `.venv`, reads `.env`, and runs `python -m collector`. Pass CLI flags through if needed (e.g. `./startcollector.sh --demo` for synthetic traffic).
+
+Open `http://<collector-ip>:8080` and sign in (`admin` / `changeme` until you change it).
 
 ## Capacity and bandwidth
 
@@ -175,16 +180,24 @@ Returns installed version, git commit, commits behind, and upgrade log lines.
 
 ### systemd install
 
-Typical production path after the first deploy:
+After [first install](#first-install), register the service from the install directory:
+
+```bash
+sudo ./establishsystemd.sh
+```
+
+The script writes `/etc/systemd/system/collector.service` with this checkout’s paths, runs as the install directory owner, reloads systemd, and `enable --now`s the unit. Use `--no-start` to install the unit without starting it.
+
+Typical production upgrade loop:
 
 ```bash
 sudo systemctl stop collector
-cd /opt/collector && source .venv/bin/activate
+cd /path/to/collector && source .venv/bin/activate
 python3 -m collector upgrade
 sudo systemctl start collector
 ```
 
-Or set `UPGRADE_RESTART_CMD=systemctl restart collector` in `/opt/collector/.env` and run `python3 -m collector upgrade` from the portal or CLI — the service restarts itself when the upgrade finishes.
+Or set `UPGRADE_RESTART_CMD=systemctl restart collector` in `.env` and run `python3 -m collector upgrade` from the portal or CLI — the service restarts itself when the upgrade finishes.
 
 Manual installs without git: copy the new tree over the install directory, then `python3 -m collector upgrade --no-git`.
 
@@ -413,14 +426,23 @@ Thresholds and the allowlist are editable on the portal (Thresholds) and persist
 
 ## systemd
 
+After [first install](#first-install):
+
 ```bash
-sudo mkdir -p /opt/collector
-sudo cp -a . /opt/collector
-# install venv + .env as above
-sudo cp deploy/collector.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now collector
+sudo ./establishsystemd.sh
 ```
+
+That installs `deploy/collector.service` into `/etc/systemd/system/` with the correct `WorkingDirectory`, `.env`, and venv Python for **this** tree (works in `/opt/collector`, a home checkout, or anywhere you cloned it). The service runs as the owner of the install directory.
+
+Useful commands:
+
+```bash
+sudo systemctl status collector
+sudo journalctl -u collector -f
+sudo systemctl restart collector
+```
+
+For manual runs (no systemd), use `./startcollector.sh` from the install directory.
 
 Health check: `GET /api/health` (no auth). The dashboard APIs require a session.
 
@@ -456,6 +478,9 @@ app.include_router(router)
 
 | Path | Role |
 | --- | --- |
+| `startcollector.sh` | Activate venv and start the collector (foreground) |
+| `establishsystemd.sh` | Install/refresh `collector.service` for this directory |
+| `deploy/collector.service` | systemd unit template (`@INSTALL_ROOT@` placeholders) |
 | `collector/probe.py` | UDP NetFlow listener |
 | `collector/netflow.py` | v5 / v9 / IPFIX parser |
 | `collector/detection.py` | scan detector |
