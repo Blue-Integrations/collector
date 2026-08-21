@@ -285,10 +285,10 @@ button:hover { filter: brightness(1.08); }
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr)) minmax(180px, 2fr) auto;
   gap: 12px;
-  background: var(--bg-2);
-  border: 1px solid var(--line);
-  padding: 16px;
-  margin-bottom: 18px;
+  background: transparent;
+  border: 0;
+  padding: 0;
+  margin-bottom: 0;
   align-items: end;
 }
 @media (max-width: 960px) {
@@ -299,9 +299,23 @@ button:hover { filter: brightness(1.08); }
 .settings.hidden { display: none; }
 .settings .grow { grid-column: span 1; }
 .settings label { margin: 0; }
-.settings.webhooks {
-  grid-template-columns: 1fr 1fr;
-  align-items: end;
+.settings-section-title {
+  grid-column: 1 / -1;
+  margin: 8px 0 0;
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.settings-section-title:first-child {
+  margin-top: 0;
+}
+.settings-save {
+  grid-column: 1 / -1;
+  display: flex;
+  justify-content: flex-end;
+  padding-top: 4px;
 }
 .webhook-url span {
   display: block;
@@ -529,6 +543,10 @@ table.dense td { padding-top: 6px; padding-bottom: 6px; }
   border: 1px solid var(--line);
   padding: 18px 20px 16px;
   box-shadow: 0 12px 40px rgba(0, 0, 0, 0.35);
+}
+.modal-card-wide {
+  width: min(920px, 100%);
+  max-height: min(88vh, 780px);
 }
 .modal-head {
   display: flex;

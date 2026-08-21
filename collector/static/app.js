@@ -11,6 +11,10 @@ function panelVisible(id) {
   return el && !el.classList.contains("hidden");
 }
 
+function settingsModalOpen() {
+  return panelVisible("settings-modal");
+}
+
 function hydrateSettingsForms(data) {
   if (!data.thresholds) return;
   $("s-window").value = data.thresholds.scan_window_sec;
@@ -29,6 +33,14 @@ function hydrateWebhookForms(data) {
   $("w-discord").value = data.webhooks.discord_webhook_url || "";
   $("w-notify-detections").checked = !!data.webhooks.webhook_notify_detections;
   $("w-notify-blocks").checked = !!data.webhooks.webhook_notify_blocks;
+}
+
+function hydrateAllSettingsForms(data) {
+  hydrateSettingsForms(data);
+  hydrateWebhookForms(data);
+  if (data.version != null) {
+    $("upgrade-line").textContent = `Version ${data.version || "?"}`;
+  }
 }
 
 function updateToolbarControls(data, vendor) {
@@ -290,9 +302,7 @@ function renderOverview(data, options = {}) {
   $("auto-block-label").textContent = `Auto-block on ${vendorLabel}`;
 
   if (syncForms) {
-    hydrateSettingsForms(data);
-    hydrateWebhookForms(data);
-    $("upgrade-line").textContent = `Version ${data.version || "?"}`;
+    hydrateAllSettingsForms(data);
   }
   updateToolbarControls(data, vendor);
 
@@ -463,6 +473,17 @@ function hideWhoisModal() {
   $("whois-modal").setAttribute("aria-hidden", "true");
 }
 
+function showSettingsModal() {
+  if (lastOverview) hydrateAllSettingsForms(lastOverview);
+  $("settings-modal").classList.remove("hidden");
+  $("settings-modal").setAttribute("aria-hidden", "false");
+}
+
+function hideSettingsModal() {
+  $("settings-modal").classList.add("hidden");
+  $("settings-modal").setAttribute("aria-hidden", "true");
+}
+
 async function openWhois(ip) {
   $("whois-hint").textContent = "Looking up…";
   $("whois-modal").classList.remove("hidden");
@@ -510,8 +531,15 @@ $("whois-close").addEventListener("click", hideWhoisModal);
 $("whois-modal").addEventListener("click", (ev) => {
   if (ev.target.id === "whois-modal") hideWhoisModal();
 });
+$("settings-close").addEventListener("click", hideSettingsModal);
+$("settings-modal").addEventListener("click", (ev) => {
+  if (ev.target.id === "settings-modal") hideSettingsModal();
+});
 document.addEventListener("keydown", (ev) => {
-  if (ev.key === "Escape") hideWhoisModal();
+  if (ev.key === "Escape") {
+    hideWhoisModal();
+    hideSettingsModal();
+  }
 });
 
 $("manual-block").addEventListener("submit", async (ev) => {
@@ -539,24 +567,29 @@ $("auto-block").addEventListener("change", async (ev) => {
 });
 
 $("btn-settings").addEventListener("click", () => {
-  $("settings-panel").classList.toggle("hidden");
-  $("webhooks-panel").classList.add("hidden");
-  if (panelVisible("settings-panel") && lastOverview) {
-    hydrateSettingsForms(lastOverview);
+  if (settingsModalOpen()) {
+    hideSettingsModal();
+  } else {
+    showSettingsModal();
   }
 });
 
-$("btn-webhooks").addEventListener("click", () => {
-  $("webhooks-panel").classList.toggle("hidden");
-  $("settings-panel").classList.add("hidden");
-  if (panelVisible("webhooks-panel") && lastOverview) {
-    hydrateWebhookForms(lastOverview);
-  }
-});
-
-$("webhooks-panel").addEventListener("submit", async (ev) => {
+$("settings-panel").addEventListener("submit", async (ev) => {
   ev.preventDefault();
   try {
+    await api("/api/settings", {
+      method: "POST",
+      body: JSON.stringify({
+        scan_window_sec: Number($("s-window").value),
+        vertical_port_threshold: Number($("s-vertical").value),
+        horizontal_host_threshold: Number($("s-horizontal").value),
+        unique_port_threshold: Number($("s-spray").value),
+        icmp_flood_threshold: Number($("s-icmp").value),
+        large_flow_min_bytes: Number($("s-large-bytes").value),
+        large_flow_threshold: Number($("s-large-count").value),
+        allowlist: $("s-allow").value,
+      }),
+    });
     const result = await api("/api/webhooks", {
       method: "POST",
       body: JSON.stringify({
@@ -567,8 +600,23 @@ $("webhooks-panel").addEventListener("submit", async (ev) => {
       }),
     });
     if (result.webhooks) hydrateWebhookForms({ webhooks: result.webhooks });
-    $("webhook-hint").textContent = "Webhook settings saved.";
-    $("webhooks-panel").classList.add("hidden");
+    $("webhook-hint").textContent = "Settings saved.";
+    hideSettingsModal();
+    if (lastOverview) {
+      lastOverview.thresholds = {
+        ...lastOverview.thresholds,
+        scan_window_sec: Number($("s-window").value),
+        vertical_port_threshold: Number($("s-vertical").value),
+        horizontal_host_threshold: Number($("s-horizontal").value),
+        unique_port_threshold: Number($("s-spray").value),
+        icmp_flood_threshold: Number($("s-icmp").value),
+        large_flow_min_bytes: Number($("s-large-bytes").value),
+        large_flow_threshold: Number($("s-large-count").value),
+        allowlist: $("s-allow").value,
+      };
+      lastOverview.webhooks = result.webhooks || lastOverview.webhooks;
+    }
+    await refresh();
   } catch (err) {
     $("webhook-hint").textContent = err.message;
     alert(err.message);
@@ -596,42 +644,6 @@ async function testWebhook(channel) {
 
 $("w-test-slack").addEventListener("click", () => testWebhook("slack"));
 $("w-test-discord").addEventListener("click", () => testWebhook("discord"));
-
-$("settings-panel").addEventListener("submit", async (ev) => {
-  ev.preventDefault();
-  try {
-    await api("/api/settings", {
-      method: "POST",
-      body: JSON.stringify({
-        scan_window_sec: Number($("s-window").value),
-        vertical_port_threshold: Number($("s-vertical").value),
-        horizontal_host_threshold: Number($("s-horizontal").value),
-        unique_port_threshold: Number($("s-spray").value),
-        icmp_flood_threshold: Number($("s-icmp").value),
-        large_flow_min_bytes: Number($("s-large-bytes").value),
-        large_flow_threshold: Number($("s-large-count").value),
-        allowlist: $("s-allow").value,
-      }),
-    });
-    $("settings-panel").classList.add("hidden");
-    if (lastOverview) {
-      lastOverview.thresholds = {
-        ...lastOverview.thresholds,
-        scan_window_sec: Number($("s-window").value),
-        vertical_port_threshold: Number($("s-vertical").value),
-        horizontal_host_threshold: Number($("s-horizontal").value),
-        unique_port_threshold: Number($("s-spray").value),
-        icmp_flood_threshold: Number($("s-icmp").value),
-        large_flow_min_bytes: Number($("s-large-bytes").value),
-        large_flow_threshold: Number($("s-large-count").value),
-        allowlist: $("s-allow").value,
-      };
-    }
-    await refresh();
-  } catch (err) {
-    alert(err.message);
-  }
-});
 
 $("btn-test").addEventListener("click", async () => {
   $("btn-test").disabled = true;

@@ -32,37 +32,12 @@
           </select>
         </span>
       </label>
-      <button type="button" id="btn-webhooks" class="ghost">Webhooks</button>
+      <button type="button" id="btn-settings" class="ghost">Settings</button>
       <form method="post" action="/logout">
         <button class="ghost" type="submit">Sign out</button>
       </form>
     </div>
   </header>
-
-  <form id="webhooks-panel" class="settings webhooks hidden">
-    <label class="grow webhook-url">
-      <span>Slack incoming webhook</span>
-      <input type="url" id="w-slack" placeholder="https://hooks.slack.com/services/..." autocomplete="off">
-    </label>
-    <label class="grow webhook-url">
-      <span>Discord webhook</span>
-      <input type="url" id="w-discord" placeholder="https://discord.com/api/webhooks/..." autocomplete="off">
-    </label>
-    <label class="toggle webhook-check">
-      <input type="checkbox" id="w-notify-detections" checked>
-      <span>Notify on detections</span>
-    </label>
-    <label class="toggle webhook-check">
-      <input type="checkbox" id="w-notify-blocks" checked>
-      <span>Notify on blocks</span>
-    </label>
-    <div class="webhook-actions">
-      <button type="button" id="w-test-slack" class="ghost">Test Slack</button>
-      <button type="button" id="w-test-discord" class="ghost">Test Discord</button>
-      <button type="submit">Save webhooks</button>
-    </div>
-    <p class="hint webhook-hint" id="webhook-hint">Leave a URL blank to disable that channel. Same 5-minute cooldown per source as the event log.</p>
-  </form>
 
   {% if weak_password %}
   <p class="banner">Portal password is still the default. Set <code>PORTAL_PASSWORD</code> in <code>.env</code>.</p>
@@ -103,45 +78,8 @@
       <span id="auto-block-label">Auto-block on router</span>
     </label>
     <button type="button" id="btn-test" class="ghost">Test SSH</button>
-    <button type="button" id="btn-settings" class="ghost">Thresholds</button>
     <p class="hint" id="mt-hint"></p>
   </section>
-
-  <form id="settings-panel" class="settings hidden">
-    <label>Window (sec)
-      <input type="number" id="s-window" min="5" max="600">
-    </label>
-    <label>Vertical ports
-      <input type="number" id="s-vertical" min="5" max="10000">
-    </label>
-    <label>Horizontal hosts
-      <input type="number" id="s-horizontal" min="5" max="10000">
-    </label>
-    <label>Spray unique ports
-      <input type="number" id="s-spray" min="5" max="10000">
-    </label>
-    <label>ICMP flood flows
-      <input type="number" id="s-icmp" min="5" max="100000">
-    </label>
-    <label>Large flow min bytes
-      <input type="number" id="s-large-bytes" min="256" max="1000000">
-    </label>
-    <label>Large flow count
-      <input type="number" id="s-large-count" min="2" max="100000">
-    </label>
-    <label class="grow">Allowlist CIDRs
-      <input type="text" id="s-allow" placeholder="192.168.88.0/24,10.0.0.0/8">
-    </label>
-    <button type="submit">Save</button>
-    <div class="upgrade-box">
-      <p class="muted" id="upgrade-line">Version …</p>
-      <div class="upgrade-actions">
-        <button type="button" id="btn-upgrade-check" class="ghost">Check updates</button>
-        <button type="button" id="btn-upgrade" class="ghost">Upgrade now</button>
-      </div>
-      <p class="hint" id="upgrade-hint"></p>
-    </div>
-  </form>
 
   <section class="filters" id="filters">
     <p class="filters-title">Live filters</p>
@@ -279,6 +217,79 @@
     </header>
     <ul class="log" id="events"></ul>
   </section>
+
+  <div id="settings-modal" class="modal hidden" aria-hidden="true">
+    <div class="modal-card modal-card-wide" role="dialog" aria-labelledby="settings-title">
+      <header class="modal-head">
+        <h2 id="settings-title">Settings</h2>
+        <button type="button" class="ghost modal-close" id="settings-close" aria-label="Close">×</button>
+      </header>
+      <form id="settings-panel" class="settings settings-sheet">
+        <p class="settings-section-title">Detection thresholds</p>
+        <label>Window (sec)
+          <input type="number" id="s-window" min="5" max="600">
+        </label>
+        <label>Vertical ports
+          <input type="number" id="s-vertical" min="5" max="10000">
+        </label>
+        <label>Horizontal hosts
+          <input type="number" id="s-horizontal" min="5" max="10000">
+        </label>
+        <label>Spray unique ports
+          <input type="number" id="s-spray" min="5" max="10000">
+        </label>
+        <label>ICMP flood flows
+          <input type="number" id="s-icmp" min="5" max="100000">
+        </label>
+        <label>Large flow min bytes
+          <input type="number" id="s-large-bytes" min="256" max="1000000">
+        </label>
+        <label>Large flow count
+          <input type="number" id="s-large-count" min="2" max="100000">
+        </label>
+        <label class="grow">Allowlist CIDRs
+          <input type="text" id="s-allow" placeholder="10.0.0.0/8,192.168.0.0/16">
+        </label>
+
+        <p class="settings-section-title">Webhooks</p>
+        <label class="grow webhook-url">
+          <span>Slack incoming webhook</span>
+          <input type="url" id="w-slack" placeholder="https://hooks.slack.com/services/..." autocomplete="off">
+        </label>
+        <label class="grow webhook-url">
+          <span>Discord webhook</span>
+          <input type="url" id="w-discord" placeholder="https://discord.com/api/webhooks/..." autocomplete="off">
+        </label>
+        <label class="toggle webhook-check">
+          <input type="checkbox" id="w-notify-detections" checked>
+          <span>Notify on detections</span>
+        </label>
+        <label class="toggle webhook-check">
+          <input type="checkbox" id="w-notify-blocks" checked>
+          <span>Notify on blocks</span>
+        </label>
+        <div class="webhook-actions">
+          <button type="button" id="w-test-slack" class="ghost">Test Slack</button>
+          <button type="button" id="w-test-discord" class="ghost">Test Discord</button>
+        </div>
+        <p class="hint webhook-hint" id="webhook-hint">Leave a URL blank to disable that channel. Same 5-minute cooldown per source as the event log.</p>
+
+        <div class="upgrade-box">
+          <p class="settings-section-title">Upgrade</p>
+          <p class="muted" id="upgrade-line">Version …</p>
+          <div class="upgrade-actions">
+            <button type="button" id="btn-upgrade-check" class="ghost">Check updates</button>
+            <button type="button" id="btn-upgrade" class="ghost">Upgrade now</button>
+          </div>
+          <p class="hint" id="upgrade-hint"></p>
+        </div>
+
+        <div class="settings-save">
+          <button type="submit">Save settings</button>
+        </div>
+      </form>
+    </div>
+  </div>
 
   <div id="whois-modal" class="modal hidden" aria-hidden="true">
     <div class="modal-card" role="dialog" aria-labelledby="whois-title">

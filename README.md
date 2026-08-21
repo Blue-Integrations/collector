@@ -41,11 +41,17 @@ Filters apply to both **Detected scanners** and **Recent sampled flows** without
 
 Use **Protocol → ICMP** to focus on ICMP in the flows table. Use **Kind → ICMP flood** or **Large flow** after those detections fire.
 
-Other controls: **Router** vendor picker (MikroTik / Cisco / Juniper), **Auto-block**, **Test SSH**, **Thresholds** (detector tuning + self-upgrade), **Webhooks** (Slack / Discord chat notifications), manual block/unblock, WHOIS on access-list IPs (click or Alt+click).
+Other controls: **Router** vendor picker (MikroTik / Cisco / Juniper), **Auto-block**, **Test SSH**, **Settings** (thresholds, webhooks, upgrade), manual block/unblock, WHOIS on access-list IPs (click or Alt+click).
 
-### Webhooks (Slack / Discord)
+### Settings (thresholds, webhooks, upgrade)
 
-Open **Webhooks** in the header (left of **Sign out**). Paste an [incoming Slack webhook](https://api.slack.com/messaging/webhooks) or [Discord webhook](https://discord.com/developers/docs/resources/webhook) URL, choose whether to notify on **detections** and/or **blocks**, then **Save**. Use **Test Slack** / **Test Discord** before relying on alerts.
+Open **Settings** in the header (left of **Sign out**).
+
+**Detection thresholds** — window, vertical/horizontal/spray limits, ICMP flood and large-flow tuning, allowlist CIDRs. **Save settings** persists thresholds and webhooks together.
+
+**Webhooks** — paste an [incoming Slack webhook](https://api.slack.com/messaging/webhooks) or [Discord webhook](https://discord.com/developers/docs/resources/webhook) URL, choose whether to notify on **detections** and/or **blocks**. Use **Test Slack** / **Test Discord** before relying on alerts.
+
+**Upgrade** — **Check updates** and **Upgrade now** (same as `python3 -m collector upgrade` when git is configured).
 
 | `.env` variable | Default | Purpose |
 | --- | --- | --- |
@@ -245,7 +251,7 @@ Set `UPGRADE_ALLOW_API=false` to disable in-portal upgrades (CLI still works).
 
 ### Portal
 
-Open **Thresholds** → version line at the bottom:
+Open **Settings** → **Upgrade** section:
 
 - **Check updates** — calls the same logic as `upgrade --check`
 - **Upgrade now** — `git pull` + `pip install -e .`; runs `UPGRADE_RESTART_CMD` when set
@@ -573,7 +579,7 @@ Reply legs from well-known service ports (443, 80, 22, 53, …) to ephemeral cli
 
 **ICMP note:** the flows table **Bytes** column is NetFlow's **per-flow byte counter**, not guaranteed single-packet size. A row showing 4126 B may be one large ICMP datagram or many smaller packets aggregated before the exporter closed the flow. MikroTik maps ICMP type/code into the L4 port fields on ICMP rows.
 
-### Thresholds (`.env` or portal **Thresholds**)
+### Thresholds (`.env` or portal **Settings**)
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
@@ -611,7 +617,7 @@ For manual runs (no systemd), use `./startcollector.sh` from the install directo
 
 Health check: `GET /api/health` (no auth). The dashboard APIs require a session.
 
-After the first install, use [Upgrade](#upgrade) to pull new releases (`python3 -m collector upgrade` or the portal **Thresholds** panel).
+After the first install, use [Upgrade](#upgrade) to pull new releases (`python3 -m collector upgrade` or the portal **Settings** panel).
 
 ## JSON dumps (API key)
 
