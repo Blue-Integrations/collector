@@ -70,7 +70,8 @@ For a **single edge router** exporting to a LAN collector, **hundreds to a few t
 
 Dashboard metrics or `GET /api/dump` (API key):
 
-- **`flows_per_sec`** — export rate arriving at the probe
+- **`flows_last_10s`** — flow records received in the last 10 seconds
+- **`flows_per_sec`** — average records/s over that same sliding window
 - **`dropped`** — queue full; detection is missing events
 - **`parse_errors`** — bad or missing v9/IPFIX templates
 

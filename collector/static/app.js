@@ -53,14 +53,18 @@ function renderOverview(data) {
     juniper: "Juniper",
   };
   const vendorLabel = labels[vendor] || vendor;
-  $("m-rate").textContent = fmt(s.flows_per_sec);
+  const records10s =
+    typeof s.flows_last_10s === "number"
+      ? s.flows_last_10s
+      : Math.round((s.flows_per_sec || 0) * 10);
+  $("m-rate").textContent = fmt(records10s);
   $("m-flows").textContent = fmt(s.flows);
   $("m-scans").textContent = fmt(data.detections.length);
   $("m-blocks").textContent = fmt(data.blocks.length);
 
   const probe = $("probe-pill");
   probe.textContent = s.last_flow_at
-    ? `probe live · ${s.flows_per_sec}/s`
+    ? `probe live · ${fmt(records10s)} in 10s · ${s.flows_per_sec}/s`
     : "probe waiting for NetFlow";
   probe.className = "pill" + (s.last_flow_at ? " ok" : "");
 

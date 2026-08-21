@@ -472,6 +472,8 @@ async def api_health():
         "ok": True,
         "netflow_port": rt.settings.netflow_port,
         "flows": rt.stats.flows,
+        "flows_last_10s": rt.stats.flows_last_10s(),
+        "flows_per_sec": rt.stats.flows_per_sec(),
         "version": installed_version(),
         "mikrotik": rt.mikrotik_status.get("connected"),
         "router": rt.mikrotik_status.get("connected"),

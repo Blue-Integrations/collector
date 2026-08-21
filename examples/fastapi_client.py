@@ -76,6 +76,7 @@ class ProbeStats(BaseModel):
     dropped: int = 0
     last_exporter: str = ""
     last_flow_at: float | None = None
+    flows_last_10s: int = 0
     flows_per_sec: float = 0
     uptime_sec: int = 0
 

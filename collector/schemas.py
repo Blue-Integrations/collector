@@ -9,6 +9,8 @@ class Health(BaseModel):
     ok: bool
     netflow_port: int
     flows: int
+    flows_last_10s: int = 0
+    flows_per_sec: float = 0
     version: str = "0.1.0"
     vendor: str = "mikrotik"
     router: bool | None = None
@@ -66,6 +68,7 @@ class ProbeStatsOut(BaseModel):
     dropped: int = 0
     last_exporter: str = ""
     last_flow_at: float | None = None
+    flows_last_10s: int = 0
     flows_per_sec: float = 0
     uptime_sec: int = 0
 

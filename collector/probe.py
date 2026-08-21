@@ -8,6 +8,8 @@ from collector.netflow import Flow, NetflowParser
 
 
 class ProbeStats:
+    WINDOW_SEC = 10
+
     def __init__(self) -> None:
         self.datagrams = 0
         self.parse_errors = 0
@@ -29,15 +31,24 @@ class ProbeStats:
         for _ in range(count):
             self._times.append(now)
 
-    def flows_per_sec(self) -> float:
+    def _window_count(self, window: float | None = None) -> int:
+        window = self.WINDOW_SEC if window is None else window
         now = time.time()
-        cutoff = now - 10
+        cutoff = now - window
         while self._times and self._times[0] < cutoff:
             self._times.popleft()
-        if not self._times:
+        return len(self._times)
+
+    def flows_last_10s(self) -> int:
+        return self._window_count()
+
+    def flows_per_sec(self) -> float:
+        count = self._window_count()
+        if not count:
             return 0.0
+        now = time.time()
         span = max(now - self._times[0], 1.0)
-        return round(len(self._times) / span, 1)
+        return round(count / span, 1)
 
     def as_dict(self) -> dict:
         return {
@@ -48,6 +59,7 @@ class ProbeStats:
             "dropped": self.dropped,
             "last_exporter": self.last_exporter,
             "last_flow_at": self.last_flow_at,
+            "flows_last_10s": self.flows_last_10s(),
             "flows_per_sec": self.flows_per_sec(),
             "uptime_sec": int(time.time() - self.started_at),
         }
