@@ -47,6 +47,9 @@ class Runtime:
             vertical_ports=settings.vertical_port_threshold,
             horizontal_hosts=settings.horizontal_host_threshold,
             unique_ports=settings.unique_port_threshold,
+            icmp_flood_threshold=settings.icmp_flood_threshold,
+            large_flow_min_bytes=settings.large_flow_min_bytes,
+            large_flow_threshold=settings.large_flow_threshold,
             allowlist=settings.allowlist_cidrs(),
             protected=settings.protected_cidr_list(),
         )
@@ -85,6 +88,15 @@ class Runtime:
         )
         self.detector.unique_ports = int(
             self.db.get_kv("unique_port_threshold", str(s.unique_port_threshold))
+        )
+        self.detector.icmp_flood_threshold = int(
+            self.db.get_kv("icmp_flood_threshold", str(s.icmp_flood_threshold))
+        )
+        self.detector.large_flow_min_bytes = int(
+            self.db.get_kv("large_flow_min_bytes", str(s.large_flow_min_bytes))
+        )
+        self.detector.large_flow_threshold = int(
+            self.db.get_kv("large_flow_threshold", str(s.large_flow_threshold))
         )
         allow = self.db.get_kv("allowlist", s.allowlist)
         self.detector.set_user_allowlist(
@@ -295,11 +307,7 @@ async def dashboard(request: Request):
 @app.get("/api/overview")
 async def api_overview(request: Request, _: None = Depends(require_login)):
     rt = get_runtime()
-    detections = visible_detections(
-        rt.db.detections(limit=80),
-        rt.router_blocked,
-        rt.detector.is_allowed,
-    )
+    detections = rt.db.detections(limit=80)
     blocks = rt.db.blocks(active_only=True)
     flows = rt.db.recent_flows(60)
     return {
@@ -314,6 +322,9 @@ async def api_overview(request: Request, _: None = Depends(require_login)):
             "vertical_port_threshold": rt.detector.vertical_ports,
             "horizontal_host_threshold": rt.detector.horizontal_hosts,
             "unique_port_threshold": rt.detector.unique_ports,
+            "icmp_flood_threshold": rt.detector.icmp_flood_threshold,
+            "large_flow_min_bytes": rt.detector.large_flow_min_bytes,
+            "large_flow_threshold": rt.detector.large_flow_threshold,
             "allowlist": ",".join(str(n) for n in rt.detector.allowlist),
             "protected": [str(n) for n in rt.detector.protected],
             "public_dns": [str(n) for n in rt.detector.public_dns],
@@ -321,6 +332,7 @@ async def api_overview(request: Request, _: None = Depends(require_login)):
         },
         "tracked_sources": rt.detector.tracked_sources(),
         "detections": detections,
+        "blocked_ips": sorted(rt.router_blocked),
         "blocks": blocks,
         "flows": flows,
         "events": rt.db.events(30),
@@ -387,6 +399,9 @@ async def api_settings(request: Request, _: None = Depends(require_login)):
         "vertical_port_threshold": body.get("vertical_port_threshold"),
         "horizontal_host_threshold": body.get("horizontal_host_threshold"),
         "unique_port_threshold": body.get("unique_port_threshold"),
+        "icmp_flood_threshold": body.get("icmp_flood_threshold"),
+        "large_flow_min_bytes": body.get("large_flow_min_bytes"),
+        "large_flow_threshold": body.get("large_flow_threshold"),
         "allowlist": body.get("allowlist"),
     }
     if mapping["auto_block"] is not None:
@@ -398,6 +413,9 @@ async def api_settings(request: Request, _: None = Depends(require_login)):
         "vertical_port_threshold",
         "horizontal_host_threshold",
         "unique_port_threshold",
+        "icmp_flood_threshold",
+        "large_flow_min_bytes",
+        "large_flow_threshold",
         "allowlist",
     ):
         if mapping[key] is not None:

@@ -94,6 +94,15 @@
     <label>Spray unique ports
       <input type="number" id="s-spray" min="5" max="10000">
     </label>
+    <label>ICMP flood flows
+      <input type="number" id="s-icmp" min="5" max="100000">
+    </label>
+    <label>Large flow min bytes
+      <input type="number" id="s-large-bytes" min="256" max="1000000">
+    </label>
+    <label>Large flow count
+      <input type="number" id="s-large-count" min="2" max="100000">
+    </label>
     <label class="grow">Allowlist CIDRs
       <input type="text" id="s-allow" placeholder="192.168.88.0/24,10.0.0.0/8">
     </label>
@@ -108,59 +117,122 @@
     </div>
   </form>
 
+  <section class="filters" id="filters">
+    <p class="filters-title">Live filters</p>
+    <div class="filters-row">
+      <label class="flavors compact">
+        <span class="flavors-label">Protocol</span>
+        <span class="select-wrap">
+          <select id="f-proto">
+            <option value="">All</option>
+            <option value="6">TCP</option>
+            <option value="17">UDP</option>
+            <option value="1">ICMP</option>
+            <option value="58">ICMPv6</option>
+          </select>
+        </span>
+      </label>
+      <label class="flavors compact">
+        <span class="flavors-label">Detection kind</span>
+        <span class="select-wrap">
+          <select id="f-kind">
+            <option value="">All</option>
+            <option value="vertical">Vertical</option>
+            <option value="horizontal">Horizontal</option>
+            <option value="spray">Spray</option>
+            <option value="connect-storm">Connect storm</option>
+            <option value="icmp-flood">ICMP flood</option>
+            <option value="large-flow">Large flow</option>
+          </select>
+        </span>
+      </label>
+      <label class="flavors compact filter-port">
+        <span class="flavors-label">Dst port</span>
+        <input type="number" id="f-dst-port" min="0" max="65535" placeholder="Any">
+      </label>
+      <label class="toggle filter-check">
+        <input type="checkbox" id="f-protected">
+        <span>Protected dst only</span>
+      </label>
+      <label class="toggle filter-check">
+        <input type="checkbox" id="f-syn">
+        <span>SYN only (flows)</span>
+      </label>
+      <label class="toggle filter-check">
+        <input type="checkbox" id="f-hide-blocked" checked>
+        <span>Hide blocked</span>
+      </label>
+      <label class="toggle filter-check">
+        <input type="checkbox" id="f-hide-allow" checked>
+        <span>Hide allowlisted</span>
+      </label>
+    </div>
+    <p class="hint" id="filter-hint"></p>
+  </section>
+
   <div class="split">
-    <section class="panel">
-      <header>
-        <h2>Detected scanners</h2>
-        <p class="muted">Sources hitting many ports or hosts in the detection window.</p>
-      </header>
-      <div class="table-wrap">
-        <table>
-          <thead>
-            <tr>
-              <th>Source</th>
-              <th>Kind</th>
-              <th>Score</th>
-              <th>Detail</th>
-              <th></th>
-            </tr>
-          </thead>
-          <tbody id="detections"></tbody>
-        </table>
+    <details class="panel collapsible" id="panel-detections" data-panel="detections">
+      <summary class="panel-toggle">
+        <span class="panel-toggle-main">
+          <span class="panel-title">Detected scanners</span>
+          <span class="panel-sub muted">Sources hitting many ports or hosts in the detection window.</span>
+        </span>
+        <span class="panel-badge" id="det-badge">0</span>
+      </summary>
+      <div class="panel-body">
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Source</th>
+                <th>Kind</th>
+                <th>Score</th>
+                <th>Detail</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody id="detections"></tbody>
+          </table>
+        </div>
       </div>
-    </section>
-    <section class="panel">
-      <header>
-        <h2 id="list-heading">Router access list</h2>
-        <p class="muted" id="list-name">blocked-scanners · click or Alt+click an IP for WHOIS</p>
-      </header>
-      <form id="manual-block" class="inline">
-        <input type="text" id="manual-ip" placeholder="Block IPv4 / IPv6" required>
-        <button type="submit">Block</button>
-      </form>
-      <div class="table-wrap">
-        <table>
-          <thead>
-            <tr>
-              <th>IP</th>
-              <th>Source</th>
-              <th>Reason</th>
-              <th>Age</th>
-              <th></th>
-            </tr>
-          </thead>
-          <tbody id="blocks"></tbody>
-        </table>
+    </details>
+    <details class="panel collapsible" id="panel-blocks" data-panel="blocks">
+      <summary class="panel-toggle">
+        <span class="panel-toggle-main">
+          <span class="panel-title" id="list-heading">Router access list</span>
+          <span class="panel-sub muted" id="list-name">blocked-scanners · click or Alt+click an IP for WHOIS</span>
+        </span>
+        <span class="panel-badge" id="block-badge">0</span>
+      </summary>
+      <div class="panel-body">
+        <form id="manual-block" class="inline">
+          <input type="text" id="manual-ip" placeholder="Block IPv4 / IPv6" required>
+          <button type="submit">Block</button>
+        </form>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>IP</th>
+                <th>Source</th>
+                <th>Reason</th>
+                <th>Age</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody id="blocks"></tbody>
+          </table>
+        </div>
       </div>
-    </section>
+    </details>
   </div>
 
-  <section class="panel">
+  <section class="panel panel-flows" id="panel-flows">
     <header>
       <h2>Recent sampled flows</h2>
       <p class="muted">Every eighth flow is stored so the table stays readable.</p>
     </header>
-    <div class="table-wrap">
+    <div class="table-wrap flows-table-wrap">
       <table class="dense">
         <thead>
           <tr>

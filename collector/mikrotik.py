@@ -156,14 +156,13 @@ class MikroTikClient:
 
     def _drop_connections(self, ip: str) -> None:
         """Kill already-established / fasttracked sessions so a new block takes effect."""
-        escaped = re.escape(ip)
         table = "/ipv6 firewall connection" if ":" in ip else "/ip firewall connection"
         self.run(
-            f'{table} remove [find where src-address~"{escaped}"]',
+            f'{table} remove [find where src-address="{ip}"]',
             allow_missing=True,
         )
         self.run(
-            f'{table} remove [find where dst-address~"{escaped}"]',
+            f'{table} remove [find where dst-address="{ip}"]',
             allow_missing=True,
         )
 

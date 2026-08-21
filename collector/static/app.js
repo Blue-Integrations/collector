@@ -2,6 +2,8 @@ const $ = (id) => document.getElementById(id);
 
 const PROTOS = { 1: "ICMP", 6: "TCP", 17: "UDP", 47: "GRE", 58: "ICMPv6" };
 
+let lastOverview = null;
+
 function fmt(n) {
   if (n == null) return "0";
   return Number(n).toLocaleString();
@@ -26,7 +28,160 @@ function detailText(row) {
   if (row.kind === "connect-storm") {
     return `${d.unique_src_ports || row.score} src-ports → ${d.target}:${d.port}`;
   }
+  if (row.kind === "icmp-flood") {
+    return `${d.flows || row.score} ICMP flows · max ${fmt(d.max_bytes)} B → ${d.sample_targets?.[0] || "?"}`;
+  }
+  if (row.kind === "large-flow") {
+    return `${d.flows || row.score} flows ≥ ${fmt(d.min_bytes)} B · max ${fmt(d.max_bytes)} B`;
+  }
   return `${d.unique_ports || row.score} ports / ${d.unique_hosts || "?"} hosts`;
+}
+
+function parseDetail(row) {
+  const d = row.detail;
+  if (d && typeof d === "object") return d;
+  try {
+    return JSON.parse(d || "{}");
+  } catch {
+    return {};
+  }
+}
+
+function ipv4ToInt(ip) {
+  const parts = ip.split(".");
+  if (parts.length !== 4) return null;
+  let n = 0;
+  for (const part of parts) {
+    const v = Number(part);
+    if (!Number.isInteger(v) || v < 0 || v > 255) return null;
+    n = (n << 8) + v;
+  }
+  return n >>> 0;
+}
+
+function ipInCidr(ip, cidr) {
+  if (!cidr || !ip) return false;
+  const [net, bitsRaw] = cidr.split("/");
+  const bits = Number(bitsRaw);
+  if (!net || !Number.isInteger(bits)) return ip === net;
+  if (ip.includes(":")) {
+    if (!net.includes(":")) return false;
+    return ip.toLowerCase().startsWith(net.toLowerCase().split("::")[0]);
+  }
+  const addr = ipv4ToInt(ip);
+  const network = ipv4ToInt(net);
+  if (addr == null || network == null) return false;
+  const mask = bits === 0 ? 0 : (~0 << (32 - bits)) >>> 0;
+  return (addr & mask) === (network & mask);
+}
+
+function ipInAnyCidr(ip, cidrs) {
+  return (cidrs || []).some((cidr) => ipInCidr(ip, cidr));
+}
+
+function buildAllowNets(allowlist) {
+  return (allowlist || "")
+    .split(",")
+    .map((part) => part.trim())
+    .filter(Boolean);
+}
+
+function filterState() {
+  const portRaw = $("f-dst-port").value.trim();
+  return {
+    proto: $("f-proto").value,
+    kind: $("f-kind").value,
+    dstPort: portRaw === "" ? null : Number(portRaw),
+    protectedOnly: $("f-protected").checked,
+    synOnly: $("f-syn").checked,
+    hideBlocked: $("f-hide-blocked").checked,
+    hideAllowlisted: $("f-hide-allow").checked,
+  };
+}
+
+function isAllowlisted(ip, allowNets, protectedNets) {
+  return ipInAnyCidr(ip, allowNets) || ipInAnyCidr(ip, protectedNets);
+}
+
+function isBlocked(ip, blockedSet) {
+  return blockedSet.has(ip);
+}
+
+function detectionMatchesPort(row, dstPort) {
+  if (dstPort == null) return true;
+  const d = parseDetail(row);
+  if (row.kind === "horizontal" || row.kind === "connect-storm") {
+    return Number(d.port) === dstPort;
+  }
+  if (row.kind === "vertical" || row.kind === "spray") {
+    return false;
+  }
+  return Number(d.port) === dstPort;
+}
+
+function detectionTarget(row) {
+  const d = parseDetail(row);
+  return d.target || "";
+}
+
+function applyDetectionFilters(rows, data, state) {
+  const blocked = new Set(data.blocked_ips || []);
+  const allowNets = buildAllowNets(data.thresholds?.allowlist);
+  const protectedNets = data.thresholds?.protected || [];
+  return rows.filter((row) => {
+    if (state.hideBlocked && isBlocked(row.src_ip, blocked)) return false;
+    if (state.hideAllowlisted && isAllowlisted(row.src_ip, allowNets, protectedNets)) {
+      return false;
+    }
+    if (state.kind && row.kind !== state.kind) return false;
+    if (state.dstPort != null && !detectionMatchesPort(row, state.dstPort)) return false;
+    if (state.protectedOnly) {
+      const target = detectionTarget(row);
+      if (!target || !ipInAnyCidr(target, protectedNets)) return false;
+    }
+    return true;
+  });
+}
+
+function applyFlowFilters(rows, data, state) {
+  const blocked = new Set(data.blocked_ips || []);
+  const allowNets = buildAllowNets(data.thresholds?.allowlist);
+  const protectedNets = data.thresholds?.protected || [];
+  return rows.filter((row) => {
+    if (state.hideBlocked && isBlocked(row.src_ip, blocked)) return false;
+    if (state.hideAllowlisted && isAllowlisted(row.src_ip, allowNets, protectedNets)) {
+      return false;
+    }
+    if (state.proto && String(row.proto) !== state.proto) return false;
+    if (state.dstPort != null && Number(row.dst_port) !== state.dstPort) return false;
+    if (state.protectedOnly && !ipInAnyCidr(row.dst_ip, protectedNets)) return false;
+    if (state.synOnly) {
+      if (Number(row.proto) !== 6) return false;
+      if ((Number(row.tcp_flags) || 0) & 0x02) {
+        /* SYN set */
+      } else {
+        return false;
+      }
+    }
+    return true;
+  });
+}
+
+function updateFilterHint(data, detShown, detTotal, flowShown, flowTotal) {
+  const el = $("filter-hint");
+  if (!el) return;
+  const parts = [];
+  if (detTotal !== detShown) {
+    parts.push(`${detShown} of ${detTotal} detections`);
+  } else {
+    parts.push(`${detShown} detections`);
+  }
+  if (flowTotal !== flowShown) {
+    parts.push(`${flowShown} of ${flowTotal} flows`);
+  } else {
+    parts.push(`${flowShown} flows`);
+  }
+  el.textContent = parts.join(" · ");
 }
 
 async function api(path, options) {
@@ -44,6 +199,8 @@ async function api(path, options) {
 }
 
 function renderOverview(data) {
+  lastOverview = data;
+  const state = filterState();
   const s = data.stats;
   const mt = data.router || data.mikrotik;
   const vendor = data.vendor || mt.vendor || "mikrotik";
@@ -59,8 +216,11 @@ function renderOverview(data) {
       : Math.round((s.flows_per_sec || 0) * 10);
   $("m-rate").textContent = fmt(records10s);
   $("m-flows").textContent = fmt(s.flows);
-  $("m-scans").textContent = fmt(data.detections.length);
+  const filteredDetections = applyDetectionFilters(data.detections, data, state);
+  $("m-scans").textContent = fmt(filteredDetections.length);
   $("m-blocks").textContent = fmt(data.blocks.length);
+  if ($("det-badge")) $("det-badge").textContent = fmt(filteredDetections.length);
+  if ($("block-badge")) $("block-badge").textContent = fmt(data.blocks.length);
 
   const probe = $("probe-pill");
   probe.textContent = s.last_flow_at
@@ -84,15 +244,20 @@ function renderOverview(data) {
   $("s-vertical").value = data.thresholds.vertical_port_threshold;
   $("s-horizontal").value = data.thresholds.horizontal_host_threshold;
   $("s-spray").value = data.thresholds.unique_port_threshold;
+  $("s-icmp").value = data.thresholds.icmp_flood_threshold;
+  $("s-large-bytes").value = data.thresholds.large_flow_min_bytes;
+  $("s-large-count").value = data.thresholds.large_flow_threshold;
   $("s-allow").value = data.thresholds.allowlist;
   $("upgrade-line").textContent = `Version ${data.version || "?"}`;
 
   const detBody = $("detections");
   detBody.innerHTML = "";
-  if (!data.detections.length) {
-    detBody.innerHTML = `<tr><td colspan="5" class="empty">No scanners in the last hour.</td></tr>`;
+  if (!filteredDetections.length) {
+    detBody.innerHTML = `<tr><td colspan="5" class="empty">${
+      data.detections.length ? "No detections match the current filters." : "No scanners in the last hour."
+    }</td></tr>`;
   } else {
-    for (const row of data.detections) {
+    for (const row of filteredDetections) {
       const tr = document.createElement("tr");
       tr.innerHTML = `
         <td>${row.src_ip}</td>
@@ -121,12 +286,15 @@ function renderOverview(data) {
     }
   }
 
+  const filteredFlows = applyFlowFilters(data.flows, data, state);
   const flowBody = $("flows");
   flowBody.innerHTML = "";
-  if (!data.flows.length) {
-    flowBody.innerHTML = `<tr><td colspan="4" class="empty">Waiting for exported flows.</td></tr>`;
+  if (!filteredFlows.length) {
+    flowBody.innerHTML = `<tr><td colspan="4" class="empty">${
+      data.flows.length ? "No flows match the current filters." : "Waiting for exported flows."
+    }</td></tr>`;
   } else {
-    for (const row of data.flows) {
+    for (const row of filteredFlows) {
       const tr = document.createElement("tr");
       tr.innerHTML = `
         <td>${row.src_ip}:${row.src_port}</td>
@@ -137,6 +305,14 @@ function renderOverview(data) {
     }
   }
 
+  updateFilterHint(
+    data,
+    filteredDetections.length,
+    data.detections.length,
+    filteredFlows.length,
+    data.flows.length
+  );
+
   const log = $("events");
   log.innerHTML = data.events
     .map(
@@ -144,6 +320,25 @@ function renderOverview(data) {
         `<li class="${e.level}">${new Date(e.ts * 1000).toLocaleTimeString()}  ${e.message}</li>`
     )
     .join("");
+}
+
+function rerenderFilters() {
+  if (lastOverview) renderOverview(lastOverview);
+}
+
+for (const id of [
+  "f-proto",
+  "f-kind",
+  "f-dst-port",
+  "f-protected",
+  "f-syn",
+  "f-hide-blocked",
+  "f-hide-allow",
+]) {
+  $(id).addEventListener("change", rerenderFilters);
+  if (id === "f-dst-port") {
+    $(id).addEventListener("input", rerenderFilters);
+  }
 }
 
 async function refresh() {
@@ -286,6 +481,9 @@ $("settings-panel").addEventListener("submit", async (ev) => {
         vertical_port_threshold: Number($("s-vertical").value),
         horizontal_host_threshold: Number($("s-horizontal").value),
         unique_port_threshold: Number($("s-spray").value),
+        icmp_flood_threshold: Number($("s-icmp").value),
+        large_flow_min_bytes: Number($("s-large-bytes").value),
+        large_flow_threshold: Number($("s-large-count").value),
         allowlist: $("s-allow").value,
       }),
     });
@@ -369,3 +567,16 @@ $("btn-upgrade").addEventListener("click", async () => {
 
 refresh();
 setInterval(refresh, 2000);
+
+function initCollapsiblePanels() {
+  for (const el of document.querySelectorAll("details.collapsible[data-panel]")) {
+    const key = `collector-panel-${el.dataset.panel}`;
+    const saved = localStorage.getItem(key);
+    el.open = saved === "open";
+    el.addEventListener("toggle", () => {
+      localStorage.setItem(key, el.open ? "open" : "closed");
+    });
+  }
+}
+
+initCollapsiblePanels();

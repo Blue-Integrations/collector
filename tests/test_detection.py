@@ -135,3 +135,46 @@ def test_horizontal_scan():
     for i in range(1, 12):
         detections.extend(det.observe(_flow("203.0.113.50", f"192.0.2.{i}", 22)))
     assert any(d.kind == "horizontal" for d in detections)
+
+
+def _icmp(src: str, dst: str, nbytes: int = 4126) -> Flow:
+    return Flow(src_ip=src, dst_ip=dst, src_port=0, dst_port=0, proto=1, bytes=nbytes, packets=1)
+
+
+def test_icmp_flood():
+    det = ScanDetector(window_sec=30, icmp_flood_threshold=10, large_flow_threshold=999)
+    detections = []
+    for i in range(12):
+        detections.extend(det.observe(_icmp("203.0.113.77", f"192.0.2.{i % 4 + 1}")))
+    floods = [d for d in detections if d.kind == "icmp-flood"]
+    assert floods
+    assert floods[-1].score >= 10
+    assert floods[-1].detail["max_bytes"] == 4126
+
+
+def test_large_flow():
+    det = ScanDetector(
+        window_sec=30,
+        icmp_flood_threshold=999,
+        large_flow_min_bytes=2048,
+        large_flow_threshold=5,
+    )
+    detections = []
+    for i in range(6):
+        detections.extend(
+            det.observe(
+                Flow(
+                    src_ip="203.0.113.88",
+                    dst_ip="192.0.2.8",
+                    src_port=40000 + i,
+                    dst_port=443,
+                    proto=6,
+                    bytes=4126,
+                    packets=3,
+                )
+            )
+        )
+    large = [d for d in detections if d.kind == "large-flow"]
+    assert large
+    assert large[-1].detail["max_bytes"] == 4126
+    assert "TCP" in large[-1].detail["protos"]

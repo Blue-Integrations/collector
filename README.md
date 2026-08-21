@@ -13,6 +13,38 @@ Exporter (MikroTik / Cisco / Juniper)
 
 Default policy is **detect only**. Auto-block stays off until you enable it in the portal or set `AUTO_BLOCK=true`. CIDRs in `ALLOWLIST` (LAN and management) are never auto-blocked. Public DNS anycast (Cloudflare `1.1.1.1`, Google `8.8.8.8`, Quad9, OpenDNS) is always ignored, as are DNS/DoT **reply** legs (`src_port` 53/853) so NetFlow's reverse flows are not scored as scans.
 
+## Portal dashboard
+
+Sign in at `http://<collector-ip>:8080`. The main view includes:
+
+| Area | What it shows |
+| --- | --- |
+| **Records (10s)** | Flow records received in the last 10 seconds (`flows_last_10s`) |
+| **Flows received** | Total records since startup |
+| **Active scanners** | Detections after live filters (see below) |
+| **Blocked on router** | IPs on the router access list |
+
+**Detected scanners** and **Router access list** are collapsible panels (click the header). They start collapsed so **Recent sampled flows** stays visible. Count badges on each header update every 2 seconds.
+
+### Live filters
+
+Filters apply to both **Detected scanners** and **Recent sampled flows** without reloading:
+
+| Filter | Applies to |
+| --- | --- |
+| Protocol (TCP / UDP / ICMP / ICMPv6) | Flows |
+| Detection kind | Detections |
+| Dst port | Horizontal / connect-storm detections; all flows |
+| Protected dst only | Traffic whose destination is in `PROTECTED_CIDRS` |
+| SYN only | TCP flows with SYN set (`tcp_flags`) |
+| Hide blocked / Hide allowlisted | Both tables (on by default) |
+
+Use **Protocol → ICMP** to focus on ICMP in the flows table. Use **Kind → ICMP flood** or **Large flow** after those detections fire.
+
+Other controls: **Router** vendor picker (MikroTik / Cisco / Juniper), **Auto-block**, **Test SSH**, **Thresholds** (detector tuning + self-upgrade), manual block/unblock, WHOIS on access-list IPs (click or Alt+click).
+
+**Restart required:** after changing Python code, restart the collector process (or `systemctl restart collector`). A restart started from inside Cursor's sandbox may not bind port 8080 on the host — use `./startcollector.sh` or systemd on the machine itself.
+
 ## Run it
 
 ### First install
@@ -76,6 +108,8 @@ Dashboard metrics or `GET /api/dump` (API key):
 - **`parse_errors`** — bad or missing v9/IPFIX templates
 
 If **`dropped` stays at 0** and scans look sane, export bandwidth is not your bottleneck. Scale by **flow record rate**, not Gbps of production traffic.
+
+NetFlow export is **bursty** (exporter cache timeouts, often 15–30s on MikroTik). The dashboard polls every 2 seconds, so **Records (10s)** can jump in steps rather than ticking smoothly — that is normal.
 
 ## Upgrade
 
@@ -330,7 +364,7 @@ The portal logs into the router over SSH (host and port from `.env`) and:
 
 1. Adds/removes IPs on address-list `blocked-scanners` (timeout `1d` by default)
 2. Ensures one IPv4 `chain=forward` drop for that list (added once; not reordered later)
-3. Removes tracked connections from a newly blocked IP so existing TCP sessions die immediately
+3. Removes tracked connections from a newly blocked IP (`src-address=` / `dst-address=` exact match on RouterOS 7+) so existing TCP sessions die immediately
 
 IPv6 filter is not managed. Packets only evaluate rules for their chain, so extra `input` / `forward-in` drops never see forwarded WAN traffic. Bridged L2 with `use-ip-firewall=no` can bypass IP filter on hairpinned VLAN traffic — not the usual routed WAN ingress path.
 
@@ -412,18 +446,36 @@ commit
 
 ## Detector
 
-Inside a sliding window (default 30s) a source is flagged when it does any of:
+Inside a sliding window (default **30s**) a source is flagged when it crosses any threshold below. Only **TCP and UDP** participate in port-scan logic; **ICMP** and **oversized flows** use separate counters.
 
-| Kind | Default |
-| --- | --- |
-| Vertical | ≥ 40 destination ports against one host |
-| Horizontal | ≥ 40 hosts on one destination port |
-| Spray | ≥ 80 unique destination ports overall |
-| Connect-storm | ≥ 40 source ports against one host:service (HTTPS floods) |
+| Kind | Default threshold | What it catches |
+| --- | --- | --- |
+| **Vertical** | ≥ 40 destination ports on one host | Port scan on a single target |
+| **Horizontal** | ≥ 40 hosts on one destination port | Sweep one port across many hosts |
+| **Spray** | ≥ 80 unique destination ports | Wide port spray |
+| **Connect-storm** | ≥ 40 source ports → one host:service | HTTPS/TCP floods (many ephemeral src ports to :443, etc.) |
+| **ICMP flood** | ≥ 50 ICMP/ICMPv6 flows in the window | High-volume ping / ICMP noise |
+| **Large flow** | ≥ 20 flows with ≥ **2048 bytes** each | Jumbo pings, fat flows, repeated large datagrams |
 
-Reply legs from well-known service ports (443, 80, 22, 53, …) to ephemeral client ports are ignored so NetFlow reverse flows do not look like scans from your own servers. Prefixes in `PROTECTED_CIDRS` (your WAN and hosted services) are never auto-blocked.
+Reply legs from well-known service ports (443, 80, 22, 53, …) to ephemeral client ports are ignored so NetFlow reverse flows do not look like scans or large-flow abuse from your own servers. Prefixes in `PROTECTED_CIDRS` (your WAN and hosted services) are never auto-blocked.
 
-Thresholds and the allowlist are editable on the portal (Thresholds) and persist in SQLite (`data/collector.db`). Public DNS resolvers and protected WAN prefixes stay allowlisted even if you edit that field.
+**ICMP note:** the flows table **Bytes** column is NetFlow's **per-flow byte counter**, not guaranteed single-packet size. A row showing 4126 B may be one large ICMP datagram or many smaller packets aggregated before the exporter closed the flow. MikroTik maps ICMP type/code into the L4 port fields on ICMP rows.
+
+### Thresholds (`.env` or portal **Thresholds**)
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `SCAN_WINDOW_SEC` | `30` | Sliding window for all kinds |
+| `VERTICAL_PORT_THRESHOLD` | `40` | Vertical scan |
+| `HORIZONTAL_HOST_THRESHOLD` | `40` | Horizontal scan |
+| `UNIQUE_PORT_THRESHOLD` | `80` | Spray |
+| `ICMP_FLOOD_THRESHOLD` | `50` | ICMP flows per source in the window |
+| `LARGE_FLOW_MIN_BYTES` | `2048` | Minimum bytes per flow to count toward large-flow |
+| `LARGE_FLOW_THRESHOLD` | `20` | Large flows per source in the window |
+| `ALLOWLIST` | *(see `.env.example`)* | CIDRs never auto-blocked (LAN, collector, etc.) |
+| `PROTECTED_CIDRS` | *(see `.env.example`)* | Your public/hosted prefixes — sources there are not scored |
+
+Connect-storm reuses `VERTICAL_PORT_THRESHOLD` for its source-port count. Thresholds persist in SQLite (`data/collector.db`) when changed from the portal. Public DNS resolvers and protected WAN prefixes stay allowlisted even if you edit the allowlist field.
 
 ## systemd
 
@@ -484,7 +536,7 @@ app.include_router(router)
 | `deploy/collector.service` | systemd unit template (`@INSTALL_ROOT@` placeholders) |
 | `collector/probe.py` | UDP NetFlow listener |
 | `collector/netflow.py` | v5 / v9 / IPFIX parser |
-| `collector/detection.py` | scan detector |
+| `collector/detection.py` | Scan, ICMP flood, and large-flow detector |
 | `collector/mikrotik.py` | RouterOS SSH |
 | `collector/cisco.py` | IOS/XE object-group + ACL |
 | `collector/juniper.py` | Junos prefix-list + filter |

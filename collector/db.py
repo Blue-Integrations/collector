@@ -52,7 +52,8 @@ CREATE TABLE IF NOT EXISTS flow_samples (
     dst_port INTEGER NOT NULL,
     proto INTEGER NOT NULL,
     bytes INTEGER NOT NULL,
-    packets INTEGER NOT NULL
+    packets INTEGER NOT NULL,
+    tcp_flags INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE INDEX IF NOT EXISTS idx_detections_last ON detections(last_seen DESC);
@@ -71,7 +72,18 @@ class Database:
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.execute("PRAGMA synchronous=NORMAL")
         self.conn.executescript(SCHEMA)
+        self._migrate()
         self.conn.commit()
+
+    def _migrate(self) -> None:
+        cols = {
+            row[1]
+            for row in self.conn.execute("PRAGMA table_info(flow_samples)").fetchall()
+        }
+        if "tcp_flags" not in cols:
+            self.conn.execute(
+                "ALTER TABLE flow_samples ADD COLUMN tcp_flags INTEGER NOT NULL DEFAULT 0"
+            )
 
     def close(self) -> None:
         with self._lock:
@@ -183,8 +195,8 @@ class Database:
     def insert_flow(self, flow: dict[str, Any]) -> None:
         self._execute(
             """
-            INSERT INTO flow_samples(ts, src_ip, dst_ip, src_port, dst_port, proto, bytes, packets)
-            VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO flow_samples(ts, src_ip, dst_ip, src_port, dst_port, proto, bytes, packets, tcp_flags)
+            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 time.time(),
@@ -195,6 +207,7 @@ class Database:
                 flow["proto"],
                 flow["bytes"],
                 flow["packets"],
+                int(flow.get("tcp_flags") or 0),
             ),
         )
 

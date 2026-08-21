@@ -61,6 +61,9 @@ class Settings(BaseSettings):
     vertical_port_threshold: int = 40
     horizontal_host_threshold: int = 40
     unique_port_threshold: int = 80
+    icmp_flood_threshold: int = 50
+    large_flow_min_bytes: int = 2048
+    large_flow_threshold: int = 20
 
     demo: bool = False
     db_path: Path = Field(default_factory=lambda: DATA_DIR / "collector.db")

@@ -6,7 +6,7 @@ from ipaddress import ip_address, ip_network
 from time import time
 from typing import Iterable
 
-from collector.netflow import Flow
+from collector.netflow import Flow, proto_name
 
 # Server-originated reply legs: HTTPS/SSH/DNS from our hosts → attacker:ephemeral
 # looks like a vertical scan if counted. Skip well-known SOURCE ports to high dest ports.
@@ -94,7 +94,7 @@ def _nets(cidrs: Iterable[str]) -> list:
 
 
 class ScanDetector:
-    """Sliding-window detector for vertical, horizontal, and spray port scans."""
+    """Sliding-window detector for port scans, ICMP floods, and oversized flows."""
 
     def __init__(
         self,
@@ -102,6 +102,9 @@ class ScanDetector:
         vertical_ports: int = 40,
         horizontal_hosts: int = 40,
         unique_ports: int = 80,
+        icmp_flood_threshold: int = 50,
+        large_flow_min_bytes: int = 2048,
+        large_flow_threshold: int = 20,
         allowlist: Iterable[str] | None = None,
         public_dns: Iterable[str] | None = PUBLIC_DNS_CIDRS,
         protected: Iterable[str] | None = None,
@@ -111,12 +114,19 @@ class ScanDetector:
         self.vertical_ports = vertical_ports
         self.horizontal_hosts = horizontal_hosts
         self.unique_ports = unique_ports
+        self.icmp_flood_threshold = icmp_flood_threshold
+        self.large_flow_min_bytes = large_flow_min_bytes
+        self.large_flow_threshold = large_flow_threshold
         self.ignore_dns_replies = ignore_dns_replies
         self.public_dns = _nets(public_dns or [])
         self.protected = _nets(protected or [])
         self.allowlist = _nets(allowlist or [])
         # src_ip -> deque of (ts, dst_ip, dst_port, proto, src_port)
         self._events: dict[str, deque[tuple[float, str, int, int, int]]] = defaultdict(deque)
+        # src_ip -> deque of (ts, dst_ip, bytes, packets)
+        self._icmp_events: dict[str, deque[tuple[float, str, int, int]]] = defaultdict(deque)
+        # src_ip -> deque of (ts, dst_ip, bytes, proto)
+        self._large_events: dict[str, deque[tuple[float, str, int, int]]] = defaultdict(deque)
 
     def set_user_allowlist(self, cidrs: Iterable[str]) -> None:
         self.allowlist = _nets(cidrs)
@@ -140,11 +150,24 @@ class ScanDetector:
             return []
         if self.is_allowed(flow.src_ip):
             return []
-        # Backscatter / server replies (our :443 → their ephemeral source ports)
-        if self.ignore_dns_replies and flow.src_port in SERVER_REPLY_PORTS and flow.dst_port >= 1024:
-            return []
+
+        detections: list[Detection] = []
+        reply_leg = (
+            self.ignore_dns_replies
+            and flow.proto in (6, 17)
+            and flow.src_port in SERVER_REPLY_PORTS
+            and flow.dst_port >= 1024
+        )
+        if not reply_leg and flow.bytes >= self.large_flow_min_bytes:
+            detections.extend(self._observe_large(flow))
+        if flow.proto in (1, 58):
+            detections.extend(self._observe_icmp(flow))
+            return detections
+
+        if reply_leg:
+            return detections
         if flow.proto not in (6, 17) or flow.dst_port == 0:
-            return []
+            return detections
 
         now = time()
         q = self._events[flow.src_ip]
@@ -154,7 +177,7 @@ class ScanDetector:
             q.popleft()
         if not q:
             self._events.pop(flow.src_ip, None)
-            return []
+            return detections
 
         dst_ips = {item[1] for item in q}
         dst_ports = {item[2] for item in q}
@@ -166,10 +189,10 @@ class ScanDetector:
             per_port[dst_port].add(dst_ip)
             per_service[(dst_ip, dst_port)].add(src_port)
 
-        detections: list[Detection] = []
+        port_detections: list[Detection] = []
         worst_host, worst_host_ports = max(per_host.items(), key=lambda kv: len(kv[1]))
         if len(worst_host_ports) >= self.vertical_ports:
-            detections.append(
+            port_detections.append(
                 Detection(
                     src_ip=flow.src_ip,
                     kind="vertical",
@@ -186,7 +209,7 @@ class ScanDetector:
 
         worst_port, worst_port_hosts = max(per_port.items(), key=lambda kv: len(kv[1]))
         if len(worst_port_hosts) >= self.horizontal_hosts:
-            detections.append(
+            port_detections.append(
                 Detection(
                     src_ip=flow.src_ip,
                     kind="horizontal",
@@ -202,7 +225,7 @@ class ScanDetector:
             )
 
         if len(dst_ports) >= self.unique_ports:
-            detections.append(
+            port_detections.append(
                 Detection(
                     src_ip=flow.src_ip,
                     kind="spray",
@@ -221,7 +244,7 @@ class ScanDetector:
         worst_svc, worst_src_ports = max(per_service.items(), key=lambda kv: len(kv[1]))
         if len(worst_src_ports) >= self.vertical_ports:
             target, port = worst_svc
-            detections.append(
+            port_detections.append(
                 Detection(
                     src_ip=flow.src_ip,
                     kind="connect-storm",
@@ -235,18 +258,89 @@ class ScanDetector:
                     },
                 )
             )
-        return detections
+        return detections + port_detections
 
-    def prune(self) -> None:
-        cutoff = time() - self.window_sec
+    def _observe_icmp(self, flow: Flow) -> list[Detection]:
+        now = time()
+        q = self._icmp_events[flow.src_ip]
+        q.append((now, flow.dst_ip, flow.bytes, flow.packets))
+        cutoff = now - self.window_sec
+        while q and q[0][0] < cutoff:
+            q.popleft()
+        if not q:
+            self._icmp_events.pop(flow.src_ip, None)
+            return []
+        if len(q) < self.icmp_flood_threshold:
+            return []
+
+        targets = {item[1] for item in q}
+        total_bytes = sum(item[2] for item in q)
+        max_bytes = max(item[2] for item in q)
+        return [
+            Detection(
+                src_ip=flow.src_ip,
+                kind="icmp-flood",
+                score=len(q),
+                detail={
+                    "flows": len(q),
+                    "unique_targets": len(targets),
+                    "total_bytes": total_bytes,
+                    "max_bytes": max_bytes,
+                    "sample_targets": sorted(targets)[:8],
+                    "proto": proto_name(flow.proto),
+                    "window_sec": self.window_sec,
+                },
+            )
+        ]
+
+    def _observe_large(self, flow: Flow) -> list[Detection]:
+        now = time()
+        q = self._large_events[flow.src_ip]
+        q.append((now, flow.dst_ip, flow.bytes, flow.proto))
+        cutoff = now - self.window_sec
+        while q and q[0][0] < cutoff:
+            q.popleft()
+        if not q:
+            self._large_events.pop(flow.src_ip, None)
+            return []
+        if len(q) < self.large_flow_threshold:
+            return []
+
+        targets = {item[1] for item in q}
+        max_bytes = max(item[2] for item in q)
+        protos = {item[3] for item in q}
+        return [
+            Detection(
+                src_ip=flow.src_ip,
+                kind="large-flow",
+                score=len(q),
+                detail={
+                    "flows": len(q),
+                    "min_bytes": self.large_flow_min_bytes,
+                    "max_bytes": max_bytes,
+                    "unique_targets": len(targets),
+                    "protos": sorted(proto_name(p) for p in protos),
+                    "sample_targets": sorted(targets)[:8],
+                    "window_sec": self.window_sec,
+                },
+            )
+        ]
+
+    def _prune_map(self, table: dict[str, deque], cutoff: float) -> None:
         dead = []
-        for src, q in self._events.items():
+        for src, q in table.items():
             while q and q[0][0] < cutoff:
                 q.popleft()
             if not q:
                 dead.append(src)
         for src in dead:
-            self._events.pop(src, None)
+            table.pop(src, None)
+
+    def prune(self) -> None:
+        cutoff = time() - self.window_sec
+        self._prune_map(self._events, cutoff)
+        self._prune_map(self._icmp_events, cutoff)
+        self._prune_map(self._large_events, cutoff)
 
     def tracked_sources(self) -> int:
-        return len(self._events)
+        return len(set(self._events) | set(self._icmp_events) | set(self._large_events))
