@@ -21,13 +21,23 @@ from starlette.middleware.sessions import SessionMiddleware
 from collector.blocker import VENDORS, VENDOR_LABELS, RouterError, make_blocker, normalize_vendor
 from collector.config import Settings, get_settings
 from collector.db import Database
-from collector.detection import ScanDetector
+from collector.detection import Detection, ScanDetector
 from collector.netflow import Flow, NetflowParser, proto_name
 from collector.probe import ProbeStats, start_probe
 from collector.schemas import BlockedDump, FullDump, Health, TalkersDump
 from collector.upgrade import UpgradeError, check_upgrade, installed_version, run_upgrade
 from collector.whois import WhoisError, lookup_ip
 from collector.talkers import TalkerTracker
+from collector.webhooks import (
+    WebhookSettings,
+    load_webhook_settings,
+    notify_block,
+    notify_detection,
+    save_webhook_settings,
+    send_test,
+    validate_webhook_url,
+    webhooks_as_dict,
+)
 
 STATIC = Path(__file__).parent / "static"
 TEMPLATES = Path(__file__).parent / "templates"
@@ -58,8 +68,56 @@ class Runtime:
         self.sample_counter = 0
         self.talkers = TalkerTracker()
         self.auto_block = _as_bool(self.db.get_kv("auto_block"), settings.auto_block)
+        self.webhooks = self._default_webhooks()
+        self._webhook_cooldown: dict[str, float] = {}
         self._transport = None
         self._tasks: list[asyncio.Task] = []
+
+    def _default_webhooks(self) -> WebhookSettings:
+        s = self.settings
+        return WebhookSettings(
+            slack_url=s.slack_webhook_url,
+            discord_url=s.discord_webhook_url,
+            notify_detections=s.webhook_notify_detections,
+            notify_blocks=s.webhook_notify_blocks,
+        )
+
+    def apply_webhooks(self) -> None:
+        self.webhooks = load_webhook_settings(self.db, self._default_webhooks())
+
+    def _cooldown_ok(self, key: str, seconds: int = 300) -> bool:
+        now = time.time()
+        last = self._webhook_cooldown.get(key, 0.0)
+        if now - last < seconds:
+            return False
+        self._webhook_cooldown[key] = now
+        return True
+
+    async def notify_detection_webhook(self, det: Detection, auto_blocked: bool = False) -> None:
+        if not self.webhooks.notify_detections:
+            return
+        if not (self.webhooks.slack_url or self.webhooks.discord_url):
+            return
+        key = f"det:{det.src_ip}:{det.kind}"
+        if not self._cooldown_ok(key):
+            return
+        try:
+            await asyncio.to_thread(notify_detection, self.webhooks, det, auto_blocked)
+        except Exception as exc:
+            self.db.log(f"webhook detection notify failed: {exc}", "error")
+
+    async def notify_block_webhook(self, ip: str, reason: str, source: str) -> None:
+        if not self.webhooks.notify_blocks:
+            return
+        if not (self.webhooks.slack_url or self.webhooks.discord_url):
+            return
+        key = f"block:{ip}"
+        if not self._cooldown_ok(key):
+            return
+        try:
+            await asyncio.to_thread(notify_block, self.webhooks, ip, reason, source)
+        except Exception as exc:
+            self.db.log(f"webhook block notify failed: {exc}", "error")
 
     @property
     def vendor(self) -> str:
@@ -130,6 +188,7 @@ async def lifespan(app: FastAPI):
     settings = get_settings()
     runtime = Runtime(settings)
     runtime.apply_thresholds()
+    runtime.apply_webhooks()
     runtime.db.log("collector started")
     try:
         runtime._transport = await start_probe(
@@ -336,6 +395,7 @@ async def api_overview(request: Request, _: None = Depends(require_login)):
         "blocks": blocks,
         "flows": flows,
         "events": rt.db.events(30),
+        "webhooks": webhooks_as_dict(rt.webhooks),
         "now": time.time(),
         "version": installed_version(),
     }
@@ -423,6 +483,48 @@ async def api_settings(request: Request, _: None = Depends(require_login)):
     rt.apply_thresholds()
     rt.db.log("settings updated")
     return {"ok": True, "auto_block": rt.auto_block, "vendor": rt.vendor}
+
+
+@app.post("/api/webhooks")
+async def api_webhooks_save(request: Request, _: None = Depends(require_login)):
+    body = await request.json()
+    rt = get_runtime()
+    try:
+        rt.webhooks = save_webhook_settings(rt.db, body)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    rt.db.log("webhook settings updated")
+    return {"ok": True, "webhooks": webhooks_as_dict(rt.webhooks)}
+
+
+@app.post("/api/webhooks/test")
+async def api_webhooks_test(request: Request, _: None = Depends(require_login)):
+    body = await request.json()
+    channel = (body.get("channel") or "").strip().lower()
+    if channel not in {"slack", "discord"}:
+        raise HTTPException(status_code=400, detail="channel must be slack or discord")
+    rt = get_runtime()
+    if channel == "slack":
+        raw = body.get("slack_webhook_url", rt.webhooks.slack_url)
+        try:
+            url = validate_webhook_url(str(raw or ""), "slack")
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+    else:
+        raw = body.get("discord_webhook_url", rt.webhooks.discord_url)
+        try:
+            url = validate_webhook_url(str(raw or ""), "discord")
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if not url:
+        raise HTTPException(status_code=400, detail=f"{channel} webhook URL is not configured")
+    try:
+        await asyncio.to_thread(send_test, url, channel)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return {"ok": True, "channel": channel}
 
 
 @app.post("/api/router/test")
@@ -604,6 +706,7 @@ async def _block_ip(rt: Runtime, ip: str, reason: str, source: str) -> None:
     rt.db.add_block(ip, reason, source, rt.settings.mikrotik_block_timeout)
     rt.router_blocked.add(ip)
     rt.db.log(f"blocked {ip} ({source}: {reason})")
+    await rt.notify_block_webhook(ip, reason, source)
 
 
 async def _flow_worker(rt: Runtime) -> None:
@@ -625,6 +728,7 @@ async def _flow_worker(rt: Runtime) -> None:
                     except HTTPException:
                         auto = False
                 rt.db.upsert_detection(det.src_ip, det.kind, det.score, det.detail, auto_blocked=auto)
+                await rt.notify_detection_webhook(det, auto_blocked=auto)
         except asyncio.CancelledError:
             raise
         except Exception as exc:

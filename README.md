@@ -41,7 +41,20 @@ Filters apply to both **Detected scanners** and **Recent sampled flows** without
 
 Use **Protocol → ICMP** to focus on ICMP in the flows table. Use **Kind → ICMP flood** or **Large flow** after those detections fire.
 
-Other controls: **Router** vendor picker (MikroTik / Cisco / Juniper), **Auto-block**, **Test SSH**, **Thresholds** (detector tuning + self-upgrade), manual block/unblock, WHOIS on access-list IPs (click or Alt+click).
+Other controls: **Router** vendor picker (MikroTik / Cisco / Juniper), **Auto-block**, **Test SSH**, **Thresholds** (detector tuning + self-upgrade), **Webhooks** (Slack / Discord chat notifications), manual block/unblock, WHOIS on access-list IPs (click or Alt+click).
+
+### Webhooks (Slack / Discord)
+
+Open **Webhooks** in the header (left of **Sign out**). Paste an [incoming Slack webhook](https://api.slack.com/messaging/webhooks) or [Discord webhook](https://discord.com/developers/docs/resources/webhook) URL, choose whether to notify on **detections** and/or **blocks**, then **Save**. Use **Test Slack** / **Test Discord** before relying on alerts.
+
+| `.env` variable | Default | Purpose |
+| --- | --- | --- |
+| `SLACK_WEBHOOK_URL` | *(empty)* | Default Slack URL (portal overrides in SQLite) |
+| `DISCORD_WEBHOOK_URL` | *(empty)* | Default Discord URL |
+| `WEBHOOK_NOTIFY_DETECTIONS` | `true` | Post when a scanner / flood is detected |
+| `WEBHOOK_NOTIFY_BLOCKS` | `true` | Post when an IP is blocked on the router |
+
+Each `(source IP, detection kind)` and each blocked IP is limited to **one chat message every 5 minutes** so floods do not spam the channel. Failed webhook delivery is logged in the portal event log.
 
 **Restart required:** after changing Python code, restart the collector process (or `systemctl restart collector`). A restart started from inside Cursor's sandbox may not bind port 8080 on the host — use `./startcollector.sh` or systemd on the machine itself.
 
@@ -540,6 +553,7 @@ app.include_router(router)
 | `collector/mikrotik.py` | RouterOS SSH |
 | `collector/cisco.py` | IOS/XE object-group + ACL |
 | `collector/juniper.py` | Junos prefix-list + filter |
+| `collector/webhooks.py` | Slack / Discord notification delivery |
 | `collector/app.py` | FastAPI portal |
 | `collector/upgrade.py` | git pull + pip self-upgrade |
 | `collector/templates/` | login + dashboard |

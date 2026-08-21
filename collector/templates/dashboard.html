@@ -32,11 +32,37 @@
           </select>
         </span>
       </label>
+      <button type="button" id="btn-webhooks" class="ghost">Webhooks</button>
       <form method="post" action="/logout">
         <button class="ghost" type="submit">Sign out</button>
       </form>
     </div>
   </header>
+
+  <form id="webhooks-panel" class="settings webhooks hidden">
+    <label class="grow webhook-url">
+      <span>Slack incoming webhook</span>
+      <input type="url" id="w-slack" placeholder="https://hooks.slack.com/services/..." autocomplete="off">
+    </label>
+    <label class="grow webhook-url">
+      <span>Discord webhook</span>
+      <input type="url" id="w-discord" placeholder="https://discord.com/api/webhooks/..." autocomplete="off">
+    </label>
+    <label class="toggle webhook-check">
+      <input type="checkbox" id="w-notify-detections" checked>
+      <span>Notify on detections</span>
+    </label>
+    <label class="toggle webhook-check">
+      <input type="checkbox" id="w-notify-blocks" checked>
+      <span>Notify on blocks</span>
+    </label>
+    <div class="webhook-actions">
+      <button type="button" id="w-test-slack" class="ghost">Test Slack</button>
+      <button type="button" id="w-test-discord" class="ghost">Test Discord</button>
+      <button type="submit">Save webhooks</button>
+    </div>
+    <p class="hint webhook-hint" id="webhook-hint">Leave a URL blank to disable that channel. Same 5-minute cooldown per source as the event log.</p>
+  </form>
 
   {% if weak_password %}
   <p class="banner">Portal password is still the default. Set <code>PORTAL_PASSWORD</code> in <code>.env</code>.</p>

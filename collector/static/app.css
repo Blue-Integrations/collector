@@ -299,6 +299,36 @@ button:hover { filter: brightness(1.08); }
 .settings.hidden { display: none; }
 .settings .grow { grid-column: span 1; }
 .settings label { margin: 0; }
+.settings.webhooks {
+  grid-template-columns: 1fr 1fr;
+  align-items: end;
+}
+.webhook-url span {
+  display: block;
+  font-size: 14px;
+  color: var(--muted);
+  margin-bottom: 6px;
+}
+.webhook-url input[type="url"] {
+  display: block;
+  width: 100%;
+  margin-top: 0;
+}
+.webhook-check {
+  margin: 0 0 4px;
+  align-self: center;
+}
+.webhook-actions {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+.webhook-hint {
+  grid-column: 1 / -1;
+  margin: 0;
+}
 .upgrade-box {
   grid-column: 1 / -1;
   border-top: 1px solid var(--line);

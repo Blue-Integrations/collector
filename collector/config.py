@@ -65,6 +65,11 @@ class Settings(BaseSettings):
     large_flow_min_bytes: int = 2048
     large_flow_threshold: int = 20
 
+    slack_webhook_url: str = ""
+    discord_webhook_url: str = ""
+    webhook_notify_detections: bool = True
+    webhook_notify_blocks: bool = True
+
     demo: bool = False
     db_path: Path = Field(default_factory=lambda: DATA_DIR / "collector.db")
 

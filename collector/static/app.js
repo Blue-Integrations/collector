@@ -3,6 +3,56 @@ const $ = (id) => document.getElementById(id);
 const PROTOS = { 1: "ICMP", 6: "TCP", 17: "UDP", 47: "GRE", 58: "ICMPv6" };
 
 let lastOverview = null;
+let formsSyncedOnce = false;
+let lastFlowsKey = "";
+
+function panelVisible(id) {
+  const el = $(id);
+  return el && !el.classList.contains("hidden");
+}
+
+function hydrateSettingsForms(data) {
+  if (!data.thresholds) return;
+  $("s-window").value = data.thresholds.scan_window_sec;
+  $("s-vertical").value = data.thresholds.vertical_port_threshold;
+  $("s-horizontal").value = data.thresholds.horizontal_host_threshold;
+  $("s-spray").value = data.thresholds.unique_port_threshold;
+  $("s-icmp").value = data.thresholds.icmp_flood_threshold;
+  $("s-large-bytes").value = data.thresholds.large_flow_min_bytes;
+  $("s-large-count").value = data.thresholds.large_flow_threshold;
+  $("s-allow").value = data.thresholds.allowlist;
+}
+
+function hydrateWebhookForms(data) {
+  if (!data.webhooks) return;
+  $("w-slack").value = data.webhooks.slack_webhook_url || "";
+  $("w-discord").value = data.webhooks.discord_webhook_url || "";
+  $("w-notify-detections").checked = !!data.webhooks.webhook_notify_detections;
+  $("w-notify-blocks").checked = !!data.webhooks.webhook_notify_blocks;
+}
+
+function updateToolbarControls(data, vendor) {
+  const vendorPick = $("vendor-pick");
+  if (vendorPick && document.activeElement !== vendorPick && vendorPick.value !== vendor) {
+    vendorPick.value = vendor;
+  }
+  const autoBlock = $("auto-block");
+  if (autoBlock && document.activeElement !== autoBlock) {
+    autoBlock.checked = !!data.auto_block;
+  }
+}
+
+function flowsSignature(rows) {
+  return rows
+    .map((row) => `${row.src_ip}:${row.src_port}|${row.dst_ip}:${row.dst_port}|${row.proto}|${row.bytes}`)
+    .join("\n");
+}
+
+function withScrollPreserved(container, render) {
+  const top = container ? container.scrollTop : 0;
+  render();
+  if (container) container.scrollTop = top;
+}
 
 function fmt(n) {
   if (n == null) return "0";
@@ -198,7 +248,8 @@ async function api(path, options) {
   return body;
 }
 
-function renderOverview(data) {
+function renderOverview(data, options = {}) {
+  const { syncForms = false } = options;
   lastOverview = data;
   const state = filterState();
   const s = data.stats;
@@ -237,72 +288,80 @@ function renderOverview(data) {
   $("list-name").textContent = `${mt.address_list || "blocked-scanners"} · click or Alt+click an IP for WHOIS`;
   $("list-heading").textContent = `${vendorLabel} access list`;
   $("auto-block-label").textContent = `Auto-block on ${vendorLabel}`;
-  $("vendor-pick").value = vendor;
 
-  $("auto-block").checked = !!data.auto_block;
-  $("s-window").value = data.thresholds.scan_window_sec;
-  $("s-vertical").value = data.thresholds.vertical_port_threshold;
-  $("s-horizontal").value = data.thresholds.horizontal_host_threshold;
-  $("s-spray").value = data.thresholds.unique_port_threshold;
-  $("s-icmp").value = data.thresholds.icmp_flood_threshold;
-  $("s-large-bytes").value = data.thresholds.large_flow_min_bytes;
-  $("s-large-count").value = data.thresholds.large_flow_threshold;
-  $("s-allow").value = data.thresholds.allowlist;
-  $("upgrade-line").textContent = `Version ${data.version || "?"}`;
-
-  const detBody = $("detections");
-  detBody.innerHTML = "";
-  if (!filteredDetections.length) {
-    detBody.innerHTML = `<tr><td colspan="5" class="empty">${
-      data.detections.length ? "No detections match the current filters." : "No scanners in the last hour."
-    }</td></tr>`;
-  } else {
-    for (const row of filteredDetections) {
-      const tr = document.createElement("tr");
-      tr.innerHTML = `
-        <td>${row.src_ip}</td>
-        <td><span class="kind ${row.kind}">${row.kind}</span></td>
-        <td>${row.score}</td>
-        <td>${detailText(row)} · ${age(row.last_seen, data.now)}</td>
-        <td><button type="button" data-block="${row.src_ip}">Block</button></td>`;
-      detBody.appendChild(tr);
-    }
+  if (syncForms) {
+    hydrateSettingsForms(data);
+    hydrateWebhookForms(data);
+    $("upgrade-line").textContent = `Version ${data.version || "?"}`;
   }
+  updateToolbarControls(data, vendor);
 
-  const blockBody = $("blocks");
-  blockBody.innerHTML = "";
-  if (!data.blocks.length) {
-    blockBody.innerHTML = `<tr><td colspan="5" class="empty">Nothing on the access list yet.</td></tr>`;
-  } else {
-    for (const row of data.blocks) {
-      const tr = document.createElement("tr");
-      tr.innerHTML = `
-        <td><button type="button" class="ip-whois" data-whois="${row.ip}" title="WHOIS (Alt+click)">${row.ip}</button></td>
-        <td>${row.source}</td>
-        <td>${row.reason}</td>
-        <td>${age(row.created_at, data.now)}</td>
-        <td><button type="button" class="ghost" data-unblock="${row.ip}">Unblock</button></td>`;
-      blockBody.appendChild(tr);
+  const detWrap = $("panel-detections")?.querySelector(".table-wrap");
+  withScrollPreserved(detWrap, () => {
+    const detBody = $("detections");
+    detBody.innerHTML = "";
+    if (!filteredDetections.length) {
+      detBody.innerHTML = `<tr><td colspan="5" class="empty">${
+        data.detections.length ? "No detections match the current filters." : "No scanners in the last hour."
+      }</td></tr>`;
+    } else {
+      for (const row of filteredDetections) {
+        const tr = document.createElement("tr");
+        tr.innerHTML = `
+          <td>${row.src_ip}</td>
+          <td><span class="kind ${row.kind}">${row.kind}</span></td>
+          <td>${row.score}</td>
+          <td>${detailText(row)} · ${age(row.last_seen, data.now)}</td>
+          <td><button type="button" data-block="${row.src_ip}">Block</button></td>`;
+        detBody.appendChild(tr);
+      }
     }
-  }
+  });
+
+  const blockWrap = $("panel-blocks")?.querySelector(".table-wrap");
+  withScrollPreserved(blockWrap, () => {
+    const blockBody = $("blocks");
+    blockBody.innerHTML = "";
+    if (!data.blocks.length) {
+      blockBody.innerHTML = `<tr><td colspan="5" class="empty">Nothing on the access list yet.</td></tr>`;
+    } else {
+      for (const row of data.blocks) {
+        const tr = document.createElement("tr");
+        tr.innerHTML = `
+          <td><button type="button" class="ip-whois" data-whois="${row.ip}" title="WHOIS (Alt+click)">${row.ip}</button></td>
+          <td>${row.source}</td>
+          <td>${row.reason}</td>
+          <td>${age(row.created_at, data.now)}</td>
+          <td><button type="button" class="ghost" data-unblock="${row.ip}">Unblock</button></td>`;
+        blockBody.appendChild(tr);
+      }
+    }
+  });
 
   const filteredFlows = applyFlowFilters(data.flows, data, state);
-  const flowBody = $("flows");
-  flowBody.innerHTML = "";
-  if (!filteredFlows.length) {
-    flowBody.innerHTML = `<tr><td colspan="4" class="empty">${
-      data.flows.length ? "No flows match the current filters." : "Waiting for exported flows."
-    }</td></tr>`;
-  } else {
-    for (const row of filteredFlows) {
-      const tr = document.createElement("tr");
-      tr.innerHTML = `
-        <td>${row.src_ip}:${row.src_port}</td>
-        <td>${row.dst_ip}:${row.dst_port}</td>
-        <td>${PROTOS[row.proto] || row.proto}</td>
-        <td>${fmt(row.bytes)}</td>`;
-      flowBody.appendChild(tr);
-    }
+  const flowsKey = flowsSignature(filteredFlows);
+  const flowWrap = document.querySelector(".flows-table-wrap");
+  if (flowsKey !== lastFlowsKey) {
+    lastFlowsKey = flowsKey;
+    withScrollPreserved(flowWrap, () => {
+      const flowBody = $("flows");
+      flowBody.innerHTML = "";
+      if (!filteredFlows.length) {
+        flowBody.innerHTML = `<tr><td colspan="4" class="empty">${
+          data.flows.length ? "No flows match the current filters." : "Waiting for exported flows."
+        }</td></tr>`;
+      } else {
+        for (const row of filteredFlows) {
+          const tr = document.createElement("tr");
+          tr.innerHTML = `
+            <td>${row.src_ip}:${row.src_port}</td>
+            <td>${row.dst_ip}:${row.dst_port}</td>
+            <td>${PROTOS[row.proto] || row.proto}</td>
+            <td>${fmt(row.bytes)}</td>`;
+          flowBody.appendChild(tr);
+        }
+      }
+    });
   }
 
   updateFilterHint(
@@ -314,16 +373,26 @@ function renderOverview(data) {
   );
 
   const log = $("events");
-  log.innerHTML = data.events
+  const logHtml = data.events
     .map(
       (e) =>
         `<li class="${e.level}">${new Date(e.ts * 1000).toLocaleTimeString()}  ${e.message}</li>`
     )
     .join("");
+  if (log.innerHTML !== logHtml) {
+    withScrollPreserved(log, () => {
+      log.innerHTML = logHtml;
+    });
+  }
+}
+
+function renderLiveFromCache() {
+  if (lastOverview) renderOverview(lastOverview, { syncForms: false });
 }
 
 function rerenderFilters() {
-  if (lastOverview) renderOverview(lastOverview);
+  lastFlowsKey = "";
+  if (lastOverview) renderOverview(lastOverview, { syncForms: false });
 }
 
 for (const id of [
@@ -343,7 +412,9 @@ for (const id of [
 
 async function refresh() {
   try {
-    renderOverview(await api("/api/overview"));
+    const data = await api("/api/overview");
+    renderOverview(data, { syncForms: !formsSyncedOnce });
+    formsSyncedOnce = true;
   } catch (err) {
     if (err.message !== "auth") $("mt-hint").textContent = err.message;
   }
@@ -469,7 +540,62 @@ $("auto-block").addEventListener("change", async (ev) => {
 
 $("btn-settings").addEventListener("click", () => {
   $("settings-panel").classList.toggle("hidden");
+  $("webhooks-panel").classList.add("hidden");
+  if (panelVisible("settings-panel") && lastOverview) {
+    hydrateSettingsForms(lastOverview);
+  }
 });
+
+$("btn-webhooks").addEventListener("click", () => {
+  $("webhooks-panel").classList.toggle("hidden");
+  $("settings-panel").classList.add("hidden");
+  if (panelVisible("webhooks-panel") && lastOverview) {
+    hydrateWebhookForms(lastOverview);
+  }
+});
+
+$("webhooks-panel").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  try {
+    const result = await api("/api/webhooks", {
+      method: "POST",
+      body: JSON.stringify({
+        slack_webhook_url: $("w-slack").value.trim(),
+        discord_webhook_url: $("w-discord").value.trim(),
+        webhook_notify_detections: $("w-notify-detections").checked,
+        webhook_notify_blocks: $("w-notify-blocks").checked,
+      }),
+    });
+    if (result.webhooks) hydrateWebhookForms({ webhooks: result.webhooks });
+    $("webhook-hint").textContent = "Webhook settings saved.";
+    $("webhooks-panel").classList.add("hidden");
+  } catch (err) {
+    $("webhook-hint").textContent = err.message;
+    alert(err.message);
+  }
+});
+
+async function testWebhook(channel) {
+  const hint = $("webhook-hint");
+  hint.textContent = `Testing ${channel}…`;
+  try {
+    await api("/api/webhooks/test", {
+      method: "POST",
+      body: JSON.stringify({
+        channel,
+        slack_webhook_url: $("w-slack").value.trim(),
+        discord_webhook_url: $("w-discord").value.trim(),
+      }),
+    });
+    hint.textContent = `${channel === "slack" ? "Slack" : "Discord"} test message sent.`;
+  } catch (err) {
+    hint.textContent = err.message;
+    alert(err.message);
+  }
+}
+
+$("w-test-slack").addEventListener("click", () => testWebhook("slack"));
+$("w-test-discord").addEventListener("click", () => testWebhook("discord"));
 
 $("settings-panel").addEventListener("submit", async (ev) => {
   ev.preventDefault();
@@ -488,6 +614,19 @@ $("settings-panel").addEventListener("submit", async (ev) => {
       }),
     });
     $("settings-panel").classList.add("hidden");
+    if (lastOverview) {
+      lastOverview.thresholds = {
+        ...lastOverview.thresholds,
+        scan_window_sec: Number($("s-window").value),
+        vertical_port_threshold: Number($("s-vertical").value),
+        horizontal_host_threshold: Number($("s-horizontal").value),
+        unique_port_threshold: Number($("s-spray").value),
+        icmp_flood_threshold: Number($("s-icmp").value),
+        large_flow_min_bytes: Number($("s-large-bytes").value),
+        large_flow_threshold: Number($("s-large-count").value),
+        allowlist: $("s-allow").value,
+      };
+    }
     await refresh();
   } catch (err) {
     alert(err.message);
