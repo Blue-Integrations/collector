@@ -374,6 +374,12 @@ button:hover { filter: brightness(1.08); }
   padding-top: 12px;
   margin-top: 4px;
 }
+.database-box {
+  grid-column: 1 / -1;
+  border-top: 1px solid var(--line);
+  padding-top: 12px;
+  margin-top: 4px;
+}
 .upgrade-actions {
   display: flex;
   flex-wrap: wrap;

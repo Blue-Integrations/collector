@@ -71,7 +71,13 @@ class Settings(BaseSettings):
     webhook_notify_blocks: bool = True
 
     demo: bool = False
+    db_engine: str = "sqlite"
     db_path: Path = Field(default_factory=lambda: DATA_DIR / "collector.db")
+    mysql_host: str = "127.0.0.1"
+    mysql_port: int = 3306
+    mysql_user: str = "collector"
+    mysql_password: str = ""
+    mysql_database: str = "collector"
 
     upgrade_git_remote: str = "origin"
     upgrade_git_branch: str = ""

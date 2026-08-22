@@ -33,7 +33,7 @@ Filters apply to both **Detected scanners** and **Recent sampled flows** without
 | Filter | Applies to |
 | --- | --- |
 | Protocol (TCP / UDP / ICMP / ICMPv6) | Flows |
-| Detection kind | Detections |
+| Detection kind | Detections; flows from matching scanner source IPs |
 | Dst port | Horizontal / connect-storm detections; all flows |
 | Protected dst only | Traffic whose destination is in `PROTECTED_CIDRS` |
 | SYN only | TCP flows with SYN set (`tcp_flags`) |
@@ -51,11 +51,11 @@ Open **Settings** in the header (left of **Sign out**).
 
 **Webhooks** — paste an [incoming Slack webhook](https://api.slack.com/messaging/webhooks) or [Discord webhook](https://discord.com/developers/docs/resources/webhook) URL, choose whether to notify on **detections** and/or **blocks**. Use **Test Slack** / **Test Discord** before relying on alerts.
 
-**Upgrade** — **Check updates** and **Upgrade now** (same as `python3 -m collector upgrade` when git is configured).
+**Upgrade** — **Check updates** and **Upgrade now** (same as `python3 -m collector upgrade` with the venv activated — see [CLI commands](#cli-commands)).
 
 | `.env` variable | Default | Purpose |
 | --- | --- | --- |
-| `SLACK_WEBHOOK_URL` | *(empty)* | Default Slack URL (portal overrides in SQLite) |
+| `SLACK_WEBHOOK_URL` | *(empty)* | Default Slack URL (portal overrides in the database) |
 | `DISCORD_WEBHOOK_URL` | *(empty)* | Default Discord URL |
 | `WEBHOOK_NOTIFY_DETECTIONS` | `true` | Post when a scanner / flood is detected |
 | `WEBHOOK_NOTIFY_BLOCKS` | `true` | Post when an IP is blocked on the router |
@@ -77,6 +77,17 @@ cp .env.example .env
 # edit .env — portal password, then SSH for the router you will block on
 ```
 
+### CLI commands
+
+Any `python3 -m collector …` command expects the install directory and an **activated venv**:
+
+```bash
+cd /path/to/collector
+source .venv/bin/activate
+```
+
+`./startcollector.sh` and the systemd unit activate `.venv` for you — use the steps above when running the module by hand (upgrade, db migrate, `--demo`, etc.).
+
 ### Start
 
 From the install directory:
@@ -85,9 +96,133 @@ From the install directory:
 ./startcollector.sh
 ```
 
-The script loads `.venv`, reads `.env`, and runs `python -m collector`. Pass CLI flags through if needed (e.g. `./startcollector.sh --demo` for synthetic traffic).
+The script activates `.venv`, loads `.env`, and runs `python -m collector`. Pass CLI flags through if needed (e.g. `./startcollector.sh --demo` for synthetic traffic). No need to run `source .venv/bin/activate` yourself when using this script.
 
 Open `http://<collector-ip>:8080` and sign in (`admin` / `changeme` until you change it).
+
+## Database (SQLite or MySQL)
+
+Default is **SQLite** — a single file under `data/collector.db`. Fine for a lab or one small edge collector.
+
+For heavier load or a shared DB host, set **`DB_ENGINE=mysql`** in `.env`:
+
+```bash
+DB_ENGINE=mysql
+MYSQL_HOST=127.0.0.1
+MYSQL_PORT=3306
+MYSQL_USER=collector
+MYSQL_PASSWORD=your-password
+MYSQL_DATABASE=collector
+```
+
+Create the database and user on the server first:
+
+```sql
+CREATE DATABASE collector CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+CREATE USER 'collector'@'%' IDENTIFIED BY 'your-password';
+GRANT ALL PRIVILEGES ON collector.* TO 'collector'@'%';
+FLUSH PRIVILEGES;
+```
+
+Tables are created automatically on first start. The event log records `database engine: sqlite` or `mysql` at startup.
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `DB_ENGINE` | `sqlite` | `sqlite` or `mysql` |
+| `DB_PATH` | `data/collector.db` | SQLite file (ignored when `mysql`) |
+| `MYSQL_HOST` | `127.0.0.1` | MySQL host |
+| `MYSQL_PORT` | `3306` | MySQL port |
+| `MYSQL_USER` | `collector` | MySQL user |
+| `MYSQL_PASSWORD` | *(empty)* | MySQL password |
+| `MYSQL_DATABASE` | `collector` | MySQL database name |
+
+### Migrate SQLite → MySQL
+
+Move an existing lab database into MySQL without re-entering settings in the portal. Use the [CLI commands](#cli-commands) venv steps before each `python3 -m collector db migrate` below.
+
+1. **Stop the collector** (so nothing writes to SQLite during the copy).
+2. Configure **`MYSQL_*`** in `.env` (you can leave `DB_ENGINE=sqlite` until step 4).
+3. **Dry run** — see how many rows would copy:
+
+```bash
+cd /path/to/collector
+source .venv/bin/activate
+python3 -m collector db migrate --dry-run
+```
+
+4. **Migrate** (optional `--backup` keeps `collector.db.bak`, `--wipe` clears MySQL first):
+
+```bash
+cd /path/to/collector
+source .venv/bin/activate
+python3 -m collector db migrate --backup --wipe
+```
+
+5. Switch `.env` to **`DB_ENGINE=mysql`** and restart the collector.
+
+Custom SQLite path:
+
+```bash
+cd /path/to/collector
+source .venv/bin/activate
+python3 -m collector db migrate --from /path/to/collector.db --wipe
+```
+
+Copies all tables: `kv` (portal settings / webhooks), `blocks`, `detections`, `flow_samples`, and `events`. Row IDs are regenerated on MySQL; timestamps and active/inactive block state are preserved.
+
+### Database metrics (SQLite and MySQL)
+
+The portal **Settings → Database** block and **`GET /api/overview`** / **`GET /api/health`** expose a `database` object:
+
+| Field | Meaning |
+| --- | --- |
+| `engine` | `sqlite` or `mysql` |
+| `tables` | Row counts: `flow_samples`, `detections`, `blocks`, `events`, `kv` |
+| `path` | SQLite file (sqlite only) |
+| `host`, `port`, `database` | MySQL connection (mysql only) |
+
+Use these with **`flows_per_sec`** from the same overview/health payload to estimate write load.
+
+#### Write rates (both engines)
+
+| Table | When rows are written | Typical rate |
+| --- | --- | --- |
+| `flow_samples` | Every **8th** flow record | **`flows_per_sec ÷ 8`** inserts/s |
+| `detections` | On each new/updated scan hit | Bursty — spikes during attacks |
+| `blocks` | Manual or auto block/unblock | Low |
+| `events` | Log lines (startup, blocks, errors) | Low; trimmed to **500** rows |
+| `kv` | Portal settings / webhooks | Rare |
+
+Housekeeping runs every **30s** and prunes `flow_samples` to the **4,000** most recent rows (same cap for SQLite and MySQL).
+
+Example at **24 flows/s** (typical quiet WAN): ~**3 flow-sample inserts/s**, table stays near 4k rows. At **800 flows/s**: ~**100 inserts/s** plus a periodic prune delete — still fine on local SQLite; MySQL is preferable if you want the DB off-box or need concurrent readers.
+
+#### SQLite sizing
+
+| Metric | Typical value |
+| --- | --- |
+| File location | `data/collector.db` (or `DB_PATH`) |
+| Steady-state size | Usually **under ~50 MB** at default prune caps |
+| Bottleneck | Single-writer lock during bursts; fine for one collector process |
+| When to stay on SQLite | Lab, single edge router, **`dropped` = 0**, file backup is enough |
+
+#### MySQL sizing
+
+| Metric | Guidance |
+| --- | --- |
+| When to switch | Shared DB host, remote backups, **`flows_per_sec` consistently above ~500**, or you run multiple collectors against one DB (not built-in — single process only today) |
+| Charset | **`utf8mb4`** (required for JSON detail fields) |
+| Steady-state rows | ~**4k** flow samples + detections/blocks for your retention |
+| Disk | Modest — dominated by `flow_samples` history; InnoDB buffer pool **128–256 MB** is plenty for one collector |
+| Network | One TCP connection from the collector; latency adds ~1–3 ms per write vs local SQLite — negligible at sampled flow rates |
+| Ops | Use normal MySQL backup (`mysqldump`, binlog, or managed snapshots); migrate with [`db migrate`](#migrate-sqlite--mysql) |
+
+#### What to watch (database)
+
+- **`tables.flow_samples`** near **4,000** — prune is working; if it climbs unbounded, check housekeeping/errors in `events`.
+- **`~flows_per_sec / 8`** — expected flow-sample insert rate; if MySQL CPU or disk IO spikes, confirm export sampling before tuning InnoDB.
+- **Event log** at startup: `database engine: mysql` or `sqlite`.
+- After switching engines, row counts in Settings should match post-migrate expectations (`db migrate --dry-run` first).
 
 ## Capacity and bandwidth
 
@@ -112,7 +247,7 @@ One Python asyncio process parses UDP and runs scan detection. Internal limits f
 | Limit | Value | Effect |
 | --- | --- | --- |
 | Flow queue | 20,000 records | Overflow increments `dropped` — those flows skip detection |
-| Flow samples in SQLite | every 8th flow | Keeps the dashboard readable |
+| Flow samples in DB | every 8th flow | Keeps the dashboard readable; pruned to 4,000 rows |
 | Router SSH probe | every 20s | Block list sync, not per-packet |
 
 For a **single edge router** exporting to a LAN collector, **hundreds to a few thousand flow records per second** is comfortable. It is not built as a carrier-grade collector for many high-volume exporters at unsampled line rate.
@@ -125,6 +260,7 @@ Dashboard metrics or `GET /api/dump` (API key):
 - **`flows_per_sec`** — average records/s over that same sliding window
 - **`dropped`** — queue full; detection is missing events
 - **`parse_errors`** — bad or missing v9/IPFIX templates
+- **`database`** — engine, connection info, and per-table row counts (see [Database metrics](#database-metrics-sqlite-and-mysql))
 
 If **`dropped` stays at 0** and scans look sane, export bandwidth is not your bottleneck. Scale by **flow record rate**, not Gbps of production traffic.
 
@@ -182,8 +318,8 @@ The collector can update itself from a git checkout (`git pull --ff-only` + `pip
 ### CLI (recommended for production)
 
 ```bash
-cd /root/collector   # or /opt/collector
-source .venv/bin/activate   # if you use a venv
+cd /path/to/collector   # or /opt/collector
+source .venv/bin/activate
 
 # see whether origin is ahead (contacts remote)
 python3 -m collector upgrade --check
@@ -294,9 +430,9 @@ python3 -m collector upgrade
 sudo systemctl start collector
 ```
 
-Or set `UPGRADE_RESTART_CMD=systemctl restart collector` in `.env` and run `python3 -m collector upgrade` from the portal or CLI — the service restarts itself when the upgrade finishes.
+Or set `UPGRADE_RESTART_CMD=systemctl restart collector` in `.env` and run `python3 -m collector upgrade` from the portal or CLI (with venv activated if run by hand) — the service restarts itself when the upgrade finishes.
 
-Manual installs without git: copy the new tree over the install directory, then `python3 -m collector upgrade --no-git`.
+Manual installs without git: copy the new tree over the install directory, then (with venv activated) `python3 -m collector upgrade --no-git`.
 
 ## MikroTik: export NetFlow
 
@@ -593,7 +729,7 @@ Reply legs from well-known service ports (443, 80, 22, 53, …) to ephemeral cli
 | `ALLOWLIST` | *(see `.env.example`)* | CIDRs never auto-blocked (LAN, collector, etc.) |
 | `PROTECTED_CIDRS` | *(see `.env.example`)* | Your public/hosted prefixes — sources there are not scored |
 
-Connect-storm reuses `VERTICAL_PORT_THRESHOLD` for its source-port count. Thresholds persist in SQLite (`data/collector.db`) when changed from the portal. Public DNS resolvers and protected WAN prefixes stay allowlisted even if you edit the allowlist field.
+Connect-storm reuses `VERTICAL_PORT_THRESHOLD` for its source-port count. Thresholds persist in the database when changed from the portal. Public DNS resolvers and protected WAN prefixes stay allowlisted even if you edit the allowlist field.
 
 ## systemd
 
@@ -617,7 +753,7 @@ For manual runs (no systemd), use `./startcollector.sh` from the install directo
 
 Health check: `GET /api/health` (no auth). The dashboard APIs require a session.
 
-After the first install, use [Upgrade](#upgrade) to pull new releases (`python3 -m collector upgrade` or the portal **Settings** panel).
+After the first install, use [Upgrade](#upgrade) to pull new releases (`python3 -m collector upgrade` with venv activated, or the portal **Settings** panel).
 
 ## JSON dumps (API key)
 

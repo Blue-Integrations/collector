@@ -2,9 +2,18 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from collector import __version__
+
+
+class DatabaseOut(BaseModel):
+    engine: str
+    tables: dict[str, int] = Field(default_factory=dict)
+    path: str | None = None
+    host: str | None = None
+    port: int | None = None
+    database: str | None = None
 
 
 class Health(BaseModel):
@@ -17,6 +26,7 @@ class Health(BaseModel):
     vendor: str = "mikrotik"
     router: bool | None = None
     mikrotik: bool | None = None
+    database: DatabaseOut | None = None
 
 
 class BlockedIP(BaseModel):

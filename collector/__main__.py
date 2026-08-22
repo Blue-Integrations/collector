@@ -3,10 +3,12 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+from pathlib import Path
 
 import uvicorn
 
 from collector.config import get_settings
+from collector.db_migrate import MigrateError, migrate_sqlite_to_mysql
 from collector.upgrade import UpgradeError, check_upgrade, installed_version, run_upgrade
 
 
@@ -71,12 +73,54 @@ def _upgrade(args: argparse.Namespace) -> None:
         print("restart the collector process to load new code")
 
 
+def _db_migrate(args: argparse.Namespace) -> None:
+    settings = get_settings()
+    source = Path(args.source).expanduser() if args.source else settings.db_path
+    try:
+        report = migrate_sqlite_to_mysql(
+            settings,
+            sqlite_path=source,
+            dry_run=args.dry_run,
+            wipe=args.wipe,
+            backup=args.backup,
+        )
+    except MigrateError as exc:
+        print(f"migrate failed: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    print(f"source:  {report.source}")
+    print(f"target:  {report.target}")
+    if report.dry_run:
+        print("mode:    dry run")
+    if report.wiped:
+        print("wiped:   yes")
+    for table in ("kv", "blocks", "detections", "flow_samples", "events"):
+        if table in report.counts:
+            print(f"{table:14} {report.counts[table]}")
+    for line in report.log:
+        print(line)
+    print(report.message)
+    if not report.dry_run:
+        print("Set DB_ENGINE=mysql in .env and restart the collector when ready.")
+
+
+def _db(args: argparse.Namespace) -> None:
+    if args.db_command == "migrate":
+        _db_migrate(args)
+    else:
+        print("unknown db command", file=sys.stderr)
+        sys.exit(1)
+
+
 def main() -> None:
     # Legacy: python -m collector --demo / --host / --port
     if len(sys.argv) > 1 and sys.argv[1].startswith("-"):
         sys.argv.insert(1, "serve")
 
-    parser = argparse.ArgumentParser(description="NetFlow collector portal")
+    parser = argparse.ArgumentParser(
+        description="NetFlow collector portal",
+        epilog="Run from the install directory with the venv active: source .venv/bin/activate",
+    )
     sub = parser.add_subparsers(dest="command")
 
     serve = sub.add_parser("serve", help="run the web portal and NetFlow probe (default)")
@@ -97,6 +141,30 @@ def main() -> None:
         help="shell command to run after upgrade (default: UPGRADE_RESTART_CMD from .env)",
     )
 
+    db = sub.add_parser("db", help="database tools")
+    db_sub = db.add_subparsers(dest="db_command", required=True)
+    mig = db_sub.add_parser(
+        "migrate",
+        help="copy SQLite data into MySQL (source .venv/bin/activate first; uses MYSQL_* from .env)",
+    )
+    mig.add_argument(
+        "--from",
+        dest="source",
+        default="",
+        help="SQLite file path (default: DB_PATH / data/collector.db)",
+    )
+    mig.add_argument("--dry-run", action="store_true", help="report row counts only")
+    mig.add_argument(
+        "--wipe",
+        action="store_true",
+        help="delete existing MySQL rows before importing",
+    )
+    mig.add_argument(
+        "--backup",
+        action="store_true",
+        help="copy the SQLite file to .db.bak before migrating",
+    )
+
     parser.set_defaults(
         command="serve",
         host=None,
@@ -109,10 +177,17 @@ def main() -> None:
         remote="",
         branch="",
         restart="",
+        db_command="",
+        source="",
+        dry_run=False,
+        wipe=False,
+        backup=False,
     )
     args = parser.parse_args()
     if args.command == "upgrade":
         _upgrade(args)
+    elif args.command == "db":
+        _db(args)
     else:
         _serve(args)
 

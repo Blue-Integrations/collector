@@ -21,7 +21,7 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from collector.blocker import VENDORS, VENDOR_LABELS, RouterError, make_blocker, normalize_vendor
 from collector.config import Settings, get_settings
-from collector.db import Database
+from collector.db import open_database
 from collector.detection import Detection, ScanDetector
 from collector.netflow import Flow, NetflowParser, proto_name
 from collector.probe import ProbeStats, start_probe
@@ -47,7 +47,7 @@ TEMPLATES = Path(__file__).parent / "templates"
 class Runtime:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
-        self.db = Database(settings.db_path)
+        self.db = open_database(settings)
         self.parser = NetflowParser()
         self.stats = ProbeStats()
         self.queue: asyncio.Queue[Flow] = asyncio.Queue(maxsize=20000)
@@ -198,6 +198,7 @@ async def lifespan(app: FastAPI):
     runtime.apply_thresholds()
     runtime.apply_webhooks()
     runtime.db.log("collector started")
+    runtime.db.log(f"database engine: {runtime.db.engine}")
     try:
         runtime._transport = await start_probe(
             settings.netflow_host,
@@ -409,6 +410,7 @@ async def api_overview(request: Request, _: None = Depends(require_login)):
         "webhooks": webhooks_as_dict(rt.webhooks),
         "now": time.time(),
         "version": installed_version(),
+        "database": rt.db.info(rt.settings),
     }
 
 
@@ -609,6 +611,7 @@ async def api_health():
         "mikrotik": rt.mikrotik_status.get("connected"),
         "router": rt.mikrotik_status.get("connected"),
         "vendor": rt.vendor,
+        "database": rt.db.info(rt.settings),
     }
 
 

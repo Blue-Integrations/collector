@@ -5,6 +5,7 @@ const PROTOS = { 1: "ICMP", 6: "TCP", 17: "UDP", 47: "GRE", 58: "ICMPv6" };
 let lastOverview = null;
 let formsSyncedOnce = false;
 let lastFlowsKey = "";
+let lastDetectionsKey = "";
 let lastVendorPick = "";
 let routerProfiles = {};
 
@@ -89,9 +90,37 @@ function hydrateWebhookForms(data) {
 function hydrateAllSettingsForms(data) {
   hydrateSettingsForms(data);
   hydrateWebhookForms(data);
+  hydrateDatabaseInfo(data);
   if (data.version != null) {
     $("upgrade-line").textContent = `Version ${data.version || "?"}`;
   }
+}
+
+function formatDatabaseLine(db) {
+  if (!db) return "Engine unknown";
+  if (db.engine === "mysql") {
+    return `MySQL · ${db.database || "?"} @ ${db.host || "?"}:${db.port || 3306}`;
+  }
+  return `SQLite · ${db.path || "data/collector.db"}`;
+}
+
+function formatDatabaseHint(db, stats) {
+  if (!db?.tables) return "";
+  const t = db.tables;
+  const fps = stats?.flows_per_sec;
+  const sampleWrites = typeof fps === "number" ? (fps / 8).toFixed(1) : "?";
+  return (
+    `Rows: ${fmt(t.flow_samples)} flow samples, ${fmt(t.detections)} detections, ` +
+    `${fmt(t.blocks)} blocks, ${fmt(t.events)} events · ~${sampleWrites} DB flow writes/s (1/8 sampled)`
+  );
+}
+
+function hydrateDatabaseInfo(data) {
+  const line = $("db-line");
+  const hint = $("db-hint");
+  if (!line || !data?.database) return;
+  line.textContent = formatDatabaseLine(data.database);
+  if (hint) hint.textContent = formatDatabaseHint(data.database, data.stats);
 }
 
 function updateToolbarControls(data, vendor) {
@@ -103,6 +132,31 @@ function updateToolbarControls(data, vendor) {
   if (autoBlock && document.activeElement !== autoBlock) {
     autoBlock.checked = !!data.auto_block;
   }
+}
+
+function detectionFilterKey(state) {
+  return [
+    state.kind,
+    state.dstPort,
+    state.protectedOnly ? 1 : 0,
+    state.hideBlocked ? 1 : 0,
+    state.hideAllowlisted ? 1 : 0,
+  ].join("|");
+}
+
+function detectionSourceIps(detections, kind) {
+  if (!kind) return null;
+  const ips = new Set();
+  for (const row of detections || []) {
+    if (row.kind === kind) ips.add(row.src_ip);
+  }
+  return ips;
+}
+
+function detectionsSignature(state, rows) {
+  return `${detectionFilterKey(state)}\n${rows
+    .map((row) => `${row.src_ip}|${row.kind}|${row.score}|${row.last_seen}`)
+    .join("\n")}`;
 }
 
 function flowsSignature(rows) {
@@ -259,10 +313,8 @@ function detectionMatchesPort(row, dstPort) {
   if (row.kind === "horizontal" || row.kind === "connect-storm") {
     return Number(d.port) === dstPort;
   }
-  if (row.kind === "vertical" || row.kind === "spray") {
-    return false;
-  }
-  return Number(d.port) === dstPort;
+  // Dst port filter applies to horizontal / connect-storm detections and all flows only.
+  return true;
 }
 
 function detectionTarget(row) {
@@ -295,7 +347,7 @@ function applyFlowFilters(rows, data, state) {
   const allowNets = buildAllowNets(data.thresholds?.allowlist);
   const protectedNets = data.thresholds?.protected || [];
   const publicDns = data.thresholds?.public_dns || [];
-  return rows.filter((row) => {
+  let filtered = rows.filter((row) => {
     if (state.hideBlocked && isBlocked(row.src_ip, blocked)) return false;
     if (state.hideAllowlisted && isAllowlisted(row.src_ip, allowNets, protectedNets, publicDns)) {
       return false;
@@ -313,12 +365,21 @@ function applyFlowFilters(rows, data, state) {
     }
     return true;
   });
+  if (state.kind) {
+    const ips = detectionSourceIps(data.detections, state.kind);
+    if (!ips || !ips.size) return [];
+    filtered = filtered.filter((row) => ips.has(row.src_ip));
+  }
+  return filtered;
 }
 
-function updateFilterHint(data, detShown, detTotal, flowShown, flowTotal) {
+function updateFilterHint(data, state, detShown, detTotal, flowShown, flowTotal) {
   const el = $("filter-hint");
   if (!el) return;
   const parts = [];
+  if (state.kind) {
+    parts.push(`Kind: ${state.kind}`);
+  }
   if (detTotal !== detShown) {
     parts.push(`${detShown} of ${detTotal} detections`);
   } else {
@@ -389,6 +450,8 @@ function renderOverview(data, options = {}) {
 
   if (syncForms) {
     hydrateAllSettingsForms(data);
+  } else if (settingsModalOpen()) {
+    hydrateDatabaseInfo(data);
   }
   if (data.router_profiles) {
     routerProfiles = data.router_profiles;
@@ -398,26 +461,30 @@ function renderOverview(data, options = {}) {
   updateAllowlistFilterTitle(data.thresholds);
 
   const detWrap = $("panel-detections")?.querySelector(".table-wrap");
-  withScrollPreserved(detWrap, () => {
-    const detBody = $("detections");
-    detBody.innerHTML = "";
-    if (!filteredDetections.length) {
-      detBody.innerHTML = `<tr><td colspan="5" class="empty">${
-        data.detections.length ? "No detections match the current filters." : "No scanners in the last hour."
-      }</td></tr>`;
-    } else {
-      for (const row of filteredDetections) {
-        const tr = document.createElement("tr");
-        tr.innerHTML = `
+  const detKey = detectionsSignature(state, filteredDetections);
+  if (detKey !== lastDetectionsKey) {
+    lastDetectionsKey = detKey;
+    withScrollPreserved(detWrap, () => {
+      const detBody = $("detections");
+      detBody.innerHTML = "";
+      if (!filteredDetections.length) {
+        detBody.innerHTML = `<tr><td colspan="5" class="empty">${
+          data.detections.length ? "No detections match the current filters." : "No scanners in the last hour."
+        }</td></tr>`;
+      } else {
+        for (const row of filteredDetections) {
+          const tr = document.createElement("tr");
+          tr.innerHTML = `
           <td>${row.src_ip}</td>
           <td><span class="kind ${row.kind}">${row.kind}</span></td>
           <td>${row.score}</td>
           <td>${detailText(row)} · ${age(row.last_seen, data.now)}</td>
           <td><button type="button" data-block="${row.src_ip}">Block</button></td>`;
-        detBody.appendChild(tr);
+          detBody.appendChild(tr);
+        }
       }
-    }
-  });
+    });
+  }
 
   const blockWrap = $("panel-blocks")?.querySelector(".table-wrap");
   withScrollPreserved(blockWrap, () => {
@@ -467,6 +534,7 @@ function renderOverview(data, options = {}) {
 
   updateFilterHint(
     data,
+    state,
     filteredDetections.length,
     data.detections.length,
     filteredFlows.length,
@@ -493,6 +561,7 @@ function renderLiveFromCache() {
 
 function rerenderFilters() {
   lastFlowsKey = "";
+  lastDetectionsKey = "";
   if (lastOverview) renderOverview(lastOverview, { syncForms: false });
 }
 
