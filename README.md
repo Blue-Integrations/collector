@@ -195,32 +195,22 @@ Use these with **`flows_per_sec`** from the same overview/health payload to esti
 
 Housekeeping runs every **30s** and prunes `flow_samples` to the **4,000** most recent rows (same cap for SQLite and MySQL).
 
-Example at **24 flows/s** (typical quiet WAN): ~**3 flow-sample inserts/s**, table stays near 4k rows. At **800 flows/s**: ~**100 inserts/s** plus a periodic prune delete — still fine on local SQLite; MySQL is preferable if you want the DB off-box or need concurrent readers.
+At **500–3,000 flows/s**, expect **~62–375** flow-sample inserts/s (`flows_per_sec ÷ 8`). The database is rarely the bottleneck — the Python flow worker and **20,000-record queue** are. Steady-state DB size stays **under ~100 MB** at default prune caps regardless of engine.
 
-#### SQLite sizing
+#### SQLite vs MySQL
 
-| Metric | Typical value |
-| --- | --- |
-| File location | `data/collector.db` (or `DB_PATH`) |
-| Steady-state size | Usually **under ~50 MB** at default prune caps |
-| Bottleneck | Single-writer lock during bursts; fine for one collector process |
-| When to stay on SQLite | Lab, single edge router, **`dropped` = 0**, file backup is enough |
+| | SQLite | MySQL |
+| --- | --- | --- |
+| **Performance** | Faster for this app (single process, local file) | Fine; adds ~1–3 ms per write if remote |
+| **When to use** | Default — lab through **25 G** edge with co-located collector | Remote DB host, managed backups, shared ops team |
+| **When not to use** | — | Do **not** switch expecting higher throughput; it won't help `dropped` |
 
-#### MySQL sizing
-
-| Metric | Guidance |
-| --- | --- |
-| When to switch | Shared DB host, remote backups, **`flows_per_sec` consistently above ~500**, or you run multiple collectors against one DB (not built-in — single process only today) |
-| Charset | **`utf8mb4`** (required for JSON detail fields) |
-| Steady-state rows | ~**4k** flow samples + detections/blocks for your retention |
-| Disk | Modest — dominated by `flow_samples` history; InnoDB buffer pool **128–256 MB** is plenty for one collector |
-| Network | One TCP connection from the collector; latency adds ~1–3 ms per write vs local SQLite — negligible at sampled flow rates |
-| Ops | Use normal MySQL backup (`mysqldump`, binlog, or managed snapshots); migrate with [`db migrate`](#migrate-sqlite--mysql) |
+MySQL setup: **`utf8mb4`** charset, modest InnoDB buffer pool (**256 MB–1 GB** depending on tier — see [server sizing](#server-sizing-by-line-rate)). Migrate with [`db migrate`](#migrate-sqlite--mysql).
 
 #### What to watch (database)
 
 - **`tables.flow_samples`** near **4,000** — prune is working; if it climbs unbounded, check housekeeping/errors in `events`.
-- **`~flows_per_sec / 8`** — expected flow-sample insert rate; if MySQL CPU or disk IO spikes, confirm export sampling before tuning InnoDB.
+- **`~flows_per_sec / 8`** — expected flow-sample insert rate; tune **export sampling** before tuning InnoDB.
 - **Event log** at startup: `database engine: mysql` or `sqlite`.
 - After switching engines, row counts in Settings should match post-migrate expectations (`db migrate --dry-run` first).
 
@@ -290,6 +280,79 @@ Rough **Records (10s)** on the dashboard (same traffic mix, order-of-magnitude):
 
 If **`dropped` > 0**, increase sampling, export fewer interfaces, or shorten inactive timeouts. Scanner detection degrades as sampling gets coarser — balance export volume vs visibility.
 
+### Server sizing by line rate
+
+Size for **flow record rate** (`flows_per_sec`), not monitored Gbps. The collector never sees line-rate traffic — only NetFlow UDP on **:2055**. At each tier, router export policy (sampling, WAN-only, timeouts) must keep **`dropped = 0`**.
+
+| Software limit | Value |
+| --- | --- |
+| Flow queue | **20,000** records — overflow increments `dropped` |
+| Comfortable sustained | **~500–3,000** records/s |
+| Hard ceiling (tuned) | **~2,000–2,500** records/s sustained |
+| DB flow-sample writes | **`flows_per_sec ÷ 8`** inserts/s |
+
+Assumptions below: **one edge exporter**, WAN-only, **30s / 15s** timeouts, auto-block on, dashboard + SSH on the same LAN.
+
+#### 1 Gbps (consistent utilization)
+
+| | Target |
+| --- | --- |
+| **Flow record rate** | **200–800/s** sustained (**2k–8k** in Records (10s)) |
+| **Export UDP** | ~**1–5 Mbps** |
+| **Router** | MikroTik WAN-only, 16k cache — usually no sampler |
+| **Collector VM** | **2 vCPU**, **4 GB RAM**, **20 GB SSD**, 1 Gbps NIC |
+| **Database** | **SQLite** on same host (default) |
+| **MySQL (optional)** | Not needed; if remote ops: **1 vCPU**, **2 GB RAM**, **20 GB** disk |
+
+#### 10 Gbps (consistent utilization)
+
+| | Target |
+| --- | --- |
+| **Flow record rate** | **300–1,200/s** |
+| **Export UDP** | ~**5–20 Mbps** |
+| **Router** | Cisco/Juniper **1:1024–4096** on WAN ingress (unsampled will exceed 10k+/s) |
+| **Collector VM** | **4 vCPU**, **8 GB RAM**, **40 GB NVMe**, 10 Gbps NIC (or 1 Gbps if export stays under ~25 Mbps) |
+| **Database** | **SQLite** co-located — ~**40–150** DB inserts/s at 1/8 sampling |
+| **MySQL (optional)** | **2 vCPU**, **4 GB RAM**, `innodb_buffer_pool=256–512M` — ops choice, not performance |
+
+#### 25 Gbps (consistent utilization)
+
+| | Target |
+| --- | --- |
+| **Flow record rate** | **500–2,000/s** |
+| **Export UDP** | ~**10–40 Mbps** |
+| **Router** | **1:4096–16384** sampling; MikroTik alone is a poor fit at this tier |
+| **Collector VM** | **8 vCPU**, **16 GB RAM**, **80 GB NVMe**, 10 Gbps NIC |
+| **Database** | **SQLite** on local NVMe default; MySQL if DB lives on a shared ops host |
+| **MySQL (optional)** | **2–4 vCPU**, **8 GB RAM**, `innodb_buffer_pool=512M–1G`, SSD |
+
+#### 100 Gbps (consistent utilization)
+
+| | Target |
+| --- | --- |
+| **Flow record rate** | **500–2,500/s** (software ceiling) |
+| **Export UDP** | ~**25–100 Mbps** bursts |
+| **Router** | **1:16384–65536** on core hardware; do not rely on MikroTik alone |
+| **Collector VM** | **16 vCPU**, **32 GB RAM**, **128 GB NVMe**, 25G+ NIC |
+| **Database** | Either engine works — DB is not the bottleneck (~**60–300** inserts/s) |
+| **Honest limit** | At true 100G with useful scan visibility you may still hit **`dropped`** — consider heavier sampling, a larger VM, or a carrier-grade flow platform |
+
+#### SQLite vs MySQL by tier
+
+| Tier | Recommendation |
+| --- | --- |
+| **1 G** | SQLite — simpler and faster |
+| **10 G** | SQLite co-located unless you need remote HA/backups |
+| **25 G** | SQLite on NVMe default; MySQL if DB is managed elsewhere |
+| **100 G** | MySQL does not fix the bottleneck; scale export sampling and collector CPU first |
+
+#### Sizing workflow
+
+1. **Tune export** until **`dropped = 0`** and **`flows_per_sec`** is in the tier band above.
+2. **Size collector CPU/RAM** from measured `flows_per_sec`, not line Gbps.
+3. **Pick SQLite vs MySQL** from ops (backup, remote host) — not throughput.
+4. At **100 G** consistent, plan export so **`flows_per_sec ≤ ~2,000`**; if you cannot without losing scan fidelity, this single-process collector is not the long-term platform.
+
 ### Shared export rules (all vendors)
 
 1. Export **WAN / internet-facing interfaces only** — not every VLAN on a core.
@@ -300,14 +363,14 @@ If **`dropped` > 0**, increase sampling, export fewer interfaces, or shorten ina
 
 ### Quick pick by tier
 
-| Tier | Strategy |
-| --- | --- |
-| **1 G** | MikroTik WAN-only, 30s/15s, 16k cache — usually no sampling |
-| **10 G** | Cisco/Juniper **1:1024–4096** on WAN ingress, 30s active cache |
-| **25 G** | **1:4096–16384**, watch `dropped`, consider a beefier collector VM |
-| **100 G** | **1:16384+**, multiple collectors or commercial flow analytics; this app targets **edge 1–10G** |
+| Tier | Export strategy | Collector VM |
+| --- | --- | --- |
+| **1 G** | MikroTik WAN-only, 30s/15s, 16k cache — usually no sampling | 2 vCPU / 4 GB |
+| **10 G** | Cisco/Juniper **1:1024–4096** on WAN ingress | 4 vCPU / 8 GB |
+| **25 G** | **1:4096–16384**, watch `dropped` | 8 vCPU / 16 GB |
+| **100 G** | **1:16384+** on core hardware; at software ceiling | 16 vCPU / 32 GB |
 
-Vendor-specific examples: [MikroTik](#mikrotik-export-netflow), [Cisco](#cisco-export-netflow), [Juniper](#juniper-export-j-flow--ipfix).
+Full VM, export, and database guidance: [Server sizing by line rate](#server-sizing-by-line-rate). Vendor-specific examples: [MikroTik](#mikrotik-export-netflow), [Cisco](#cisco-export-netflow), [Juniper](#juniper-export-j-flow--ipfix).
 
 ## Upgrade
 
